@@ -1,0 +1,9 @@
+class Main {
+    public static void main (String[] args) {
+        int x;
+        int y;
+        x = 5;
+        System.out.println(x);
+        System.out.println(5 + y);
+    }
+}

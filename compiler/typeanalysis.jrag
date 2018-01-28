@@ -1,0 +1,167 @@
+aspect typeanalysis {
+
+    public final class CompileTimeType {
+        private static final int VOID = -2, UNDEF = -1, CLASST = 0, INT = 1, BOOLEAN = 2, INTARR = 3;
+        public static final CompileTimeType
+            VOIDTYPE = new CompileTimeType(VOID),  // use for statements
+            UNDEFINED = new CompileTimeType(UNDEF),
+            INTTYPE = new CompileTimeType(INT),
+            INTARRTYPE = new CompileTimeType(INTARR),
+            BOOLEANTYPE = new CompileTimeType(BOOLEAN);
+
+        private int type;
+        private String name;
+        private CompileTimeType expected, found;
+
+        public CompileTimeType(TypeUse tu) {
+            if (tu == null) {init(UNDEF, null);}
+            else if (tu instanceof Int) {init(INT, null);}
+            else if (tu instanceof IntArray) {init(INTARR, null);}
+            else if (tu instanceof Bool) {init(BOOLEAN, null);}
+            else if (tu instanceof ClassT) {init(CLASST, ((ClassT)tu).getName());}
+            else {throw new IllegalArgumentException("unrecognized type use");}
+        }
+        public CompileTimeType(String typename) {
+            init(CLASST, typename);
+        }
+        private CompileTimeType(int type) {
+            init(type, null);
+        }
+        private void init(int type, String name) {
+            if (type == CLASST && name == null) throw new IllegalArgumentException("Class type needs a name");
+            this.type = type; this.name = name;
+            if (type != UNDEF) {
+                this.expected = this; this.found = this;
+            }
+        }
+        public CompileTimeType found(CompileTimeType found) {
+            this.found = found;
+            return this;
+        }
+        public CompileTimeType expected(CompileTimeType expected) {
+            this.expected = expected;
+            return this;
+        }
+        public CompileTimeType getExpected() {return expected;}
+        public CompileTimeType getFound() {return found;}
+        public boolean assignableFrom(CompileTimeType t, TypeEnv env) {
+            if (t == null || t.type == UNDEF || t.type != type) {
+                return false;
+            } else if (t.type != CLASST) {
+                return true;
+            } else {
+                ClassDecl declLhs = env.lookup(name);
+                ClassDecl declRhs = env.lookup(t.name);
+                if (declRhs == null) {
+                    return false; // name error
+                }
+                while (declLhs != null) {
+                    if (declLhs.getIdent().equals(declRhs.getIdent())) {
+                        return true; // we purposely compare names here!
+                    }
+                    declLhs = env.lookup(declLhs.getBase());
+                }
+                return false;
+            }
+        }
+        public boolean isVoid() {return type == VOID;}
+        public boolean isInt() {return type == INT;}
+        public boolean isIntArray() {return type == INTARR;}
+        public boolean isBoolean() {return type == BOOLEAN;}
+        public boolean isClassType() {return type == CLASST;}
+        public boolean isUndefined() {return type == UNDEF;}
+        public String getTypeName() {
+            switch (type) {
+            case UNDEF: return "#undefined#";
+            case VOID: return "void";
+            case INT: return "int";
+            case INTARR: return "int[]";
+            case BOOLEAN: return "boolean";
+            case CLASST: return name;
+            default: throw new IllegalStateException("unrecognized type");
+            }
+        }
+        @Override
+        public String toString() {return getTypeName();}
+    }
+
+    syn lazy CompileTimeType Exp.ctType();
+
+    public CompileTimeType BinExp.checkTypes(CompileTimeType expleft, CompileTimeType expright, CompileTimeType ret) {
+        CompileTimeType lhs = getLeft().ctType();
+        CompileTimeType rhs = getRight().ctType();
+
+        if (!lhs.assignableFrom(expleft, typeEnv())) {
+            return CompileTimeType.UNDEFINED.expected(expleft).found(lhs);
+        }
+        if (!rhs.assignableFrom(expright, typeEnv())) {
+            return CompileTimeType.UNDEFINED.expected(expright).found(rhs);
+        }
+        return ret;
+    }
+    public CompileTimeType BinExp.checkTypes(CompileTimeType exp, CompileTimeType ret) {
+        return checkTypes(exp, exp, ret);
+    }
+    public CompileTimeType BinExp.checkTypes(CompileTimeType type) {
+        return checkTypes(type, type, type);
+    }
+
+    eq And.ctType() = checkTypes(CompileTimeType.BOOLEANTYPE);
+
+
+    eq Cmp.ctType() = checkTypes(CompileTimeType.INTTYPE, CompileTimeType.BOOLEANTYPE);
+    eq Add.ctType() = checkTypes(CompileTimeType.INTTYPE);
+    eq Sub.ctType() = checkTypes(CompileTimeType.INTTYPE);
+    eq Mult.ctType() = checkTypes(CompileTimeType.INTTYPE);
+
+    eq Not.ctType() {
+        CompileTimeType exp = CompileTimeType.BOOLEANTYPE;
+        CompileTimeType type = getExp().ctType();
+
+        if (type.isBoolean()) {
+            return exp;
+        } else {
+            return CompileTimeType.UNDEFINED.expected(exp).found(type);
+        }
+    }
+    eq Neg.ctType() {
+        CompileTimeType exp = CompileTimeType.INTTYPE;
+        CompileTimeType type = getExp().ctType();
+
+        if (type.isInt()) {
+            return exp;
+        } else {
+            return CompileTimeType.UNDEFINED.expected(exp).found(type);
+        }
+    }
+    
+    eq IdentUse.ctType() =  decl() == null ? CompileTimeType.UNDEFINED : new CompileTimeType(decl().getType());
+
+    eq ArrayAlloc.ctType() = CompileTimeType.INTARRTYPE;
+    eq ObjAlloc.ctType() = new CompileTimeType(getName());
+    eq ArrayLookup.ctType() {
+        CompileTimeType arrT = getExp().ctType();
+        CompileTimeType offT = getOffset().ctType();
+        if (!arrT.isIntArray()) {
+            return CompileTimeType.UNDEFINED.expected(CompileTimeType.INTARRTYPE).found(arrT);
+        }
+        if (!offT.isInt()) {
+            return CompileTimeType.UNDEFINED.expected(CompileTimeType.INTTYPE).found(offT);
+        }
+        return CompileTimeType.INTTYPE;
+    }
+    eq ArrayLength.ctType() {
+        CompileTimeType arrT = getExp().ctType();
+        if (!arrT.isIntArray()) {
+            return CompileTimeType.UNDEFINED.expected(CompileTimeType.INTARRTYPE).found(arrT);
+        }
+        return CompileTimeType.INTTYPE;
+    }
+
+    eq MethodCall.ctType() = decl() == null ? CompileTimeType.UNDEFINED : new CompileTimeType(decl().getRetType());
+
+    eq IntLiteral.ctType() = CompileTimeType.INTTYPE;
+    eq True.ctType() = CompileTimeType.BOOLEANTYPE;
+    eq False.ctType() = CompileTimeType.BOOLEANTYPE;
+    eq This.ctType() = new CompileTimeType(enclosingClass().getIdent());
+}

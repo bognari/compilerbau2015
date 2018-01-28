@@ -1,0 +1,589 @@
+aspect KangaGenerator {
+
+  // -------------------------------------------------------------------------
+  // Temporary counter
+  // -------------------------------------------------------------------------
+
+  public abstract int Context.lastSpigletTemp();
+  public Context ASTNode.enclosingContext() {
+    return null; // hack hack hack
+  }
+
+  inh lazy Context LabeledStmt.enclosingContext();
+  inh lazy Context Stmt.enclosingContext();
+  inh lazy Context Exp.enclosingContext();
+  inh lazy Context StmtExp.enclosingContext();
+  eq Program.getStmts().enclosingContext() = this;
+  eq Procedure.getStmtsRet().enclosingContext() = this;
+
+  public int ASTNode.lastSpigletTemp() {
+    int t = 0;
+    for (int i = 0 ; i < getNumChild() ; i++) {
+        ASTNode child = getChild(i);
+        t = Math.max(t, child.lastSpigletTemp());
+    }
+    return t;
+  }
+
+  public int ASTNode.lastSpigletTempInContext() {
+    Context ctx = enclosingContext();
+    if (ctx == null) throw new IllegalStateException();
+    return ctx.lastSpigletTemp();
+  }
+
+  syn lazy int Program.lastSpigletTemp() {
+    int t = 0;
+    for (LabeledStmt s : getStmtss()) {
+        t = Math.max(t, s.lastSpigletTemp());
+    }
+    return t;
+  }
+
+  syn lazy int Procedure.lastSpigletTemp() = getStmtsRet().lastSpigletTemp();
+  syn lazy int LabeledStmt.lastSpigletTemp() = getStmt().lastSpigletTemp();
+
+  syn int Temp.lastSpigletTemp() {
+    return getNumber();
+  }
+
+  // -------------------------------------------------------------------------
+  // Max argument counter
+  // -------------------------------------------------------------------------
+
+  public int ASTNode.maxCallArgs() {
+    int t = 0;
+    for (int i = 0 ; i < getNumChild() ; i++) {
+        ASTNode child = getChild(i);
+        t = Math.max(t, child.maxCallArgs());
+    }
+    return t;
+  }
+
+  syn lazy int Program.maxCallArgs() {
+    int t = 0;
+    for (LabeledStmt s : getStmtss()) {
+        t = Math.max(t, s.maxCallArgs());
+    }
+    return t;
+  }
+
+  syn lazy int Procedure.maxCallArgs() = getStmtsRet().maxCallArgs();
+  syn lazy int LabeledStmt.maxCallArgs() = getStmt().maxCallArgs();
+
+  syn int Call.maxCallArgs() = getNumParam();
+
+  // -------------------------------------------------------------------------
+  // Register allocation info
+  // -------------------------------------------------------------------------
+
+  public static final int ASTNode.SAVE_REGISTERS = 8;
+  public static final int ASTNode.PARAM_REGISTERS = 4;
+
+  /**
+   * Gibt die Anzahl der Temps in Registern zurück.
+   * @return Anzahl der Temps, die in Register passen
+   */
+  public int ASTNode.nonSpilledTemps() {
+    final Context ctx = enclosingContext();
+    if (ctx instanceof Procedure) { // in einer Proceudre koennen die Paramregister mit verwendet werden (temp 0 usw steht somit in a0)
+        final Procedure procCtx = (Procedure) ctx;
+        return SAVE_REGISTERS+Math.min(PARAM_REGISTERS, procCtx.getParams());
+    } else { // temp 0 beginnt bei s0 bis temp 7 bei s7
+        return SAVE_REGISTERS;
+    }
+  }
+
+  /**
+   * Gibt das das Register zurueck in welchem das Temp liegt (a0-3 oder s0-9)
+   * @throws UnsupportedOperationException, wenn das Temp nicht im Register ist also sich auf dem Stack befindet
+   * @param tmp Nummer des Temporaries
+   * @return Register in welchem sich das Temp befindet
+   */
+  public String ASTNode.regOf(int tmp) {
+
+    final Context ctx = enclosingContext();
+    final int args = (ctx instanceof Procedure) ?
+        Math.min(PARAM_REGISTERS, ((Procedure) ctx).getParams()) : 0;
+
+    if (tmp < args) {
+        return "a"+tmp;
+    } else if (tmp < args + SAVE_REGISTERS) {
+        return "s"+(tmp-args);
+    } else {
+        throw new UnsupportedOperationException("TEMP "+tmp+" cannot be mapped to register");
+    }
+  }
+  
+  /**
+   * Laed ein Temp, welches sich auf dem Stack befindet in ein Register
+   * @param tmp Index des Temps
+   * @parem reg Register in welches das Temp gespeichert werden soll
+   * @return Statement zum laden des Temps in das Register
+   */
+  public String ASTNode.stack2Reg(int tmp, String reg) {
+  	final int nst = nonSpilledTemps();
+    if (tmp >= nst) {
+        return String.format("ALOAD %s SPILLEDARG %d /* temp %d %d*/ %n", reg, tmp - nst + SAVE_REGISTERS, tmp, nst);
+    } else {
+        throw new UnsupportedOperationException("TEMP "+tmp+" is allready in a register");
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Code generator
+  // -------------------------------------------------------------------------
+
+
+  syn lazy StringBuilder Program.kangaBuilder() {
+  	return new StringBuilder();
+  }
+  eq Program.getStmts().kangaBuilder() = this.kangaBuilder();
+  eq Program.getProcs().kangaBuilder() = this.kangaBuilder();
+  
+  inh lazy StringBuilder LabeledStmt.kangaBuilder();
+  inh lazy StringBuilder Procedure.kangaBuilder();
+  inh lazy StringBuilder Stmt.kangaBuilder();
+  inh lazy StringBuilder StmtExp.kangaBuilder();
+  inh lazy StringBuilder Exp.kangaBuilder();
+  inh lazy StringBuilder Label.kangaBuilder();
+  inh lazy StringBuilder Temp.kangaBuilder();
+  
+  public int Program.getStackSize() {
+    final int temps = lastSpigletTemp() + 1;
+    final int ret = Math.max(temps, SAVE_REGISTERS);
+  	return ret;
+  }
+  
+  syn StringBuilder Program.printKanga() {
+    final int temps = lastSpigletTemp();
+    final int maxCallArgs = maxCallArgs();
+    kangaBuilder().append(String.format("MAIN [0] [%d] [%d]\n", getStackSize(), maxCallArgs)); // die main muss zwar keine s register speichern aber so macht es sich einfacher
+    for (LabeledStmt s : getStmtss()) s.printKanga();
+    kangaBuilder().append("END\n\n");
+    for (Procedure p : getProcss()) p.printKanga();
+    return kangaBuilder();
+  }
+
+  public void LabeledStmt.printKanga() {
+    if (hasLabel()) {
+        getLabel().printKanga();
+        kangaBuilder().append(" ");
+    }
+  	getStmt().printKanga();
+    kangaBuilder().append("\n");
+  }  
+ 
+  public int Procedure.getStackSize() {
+    final int args = getParams();
+    final int stackargs = Math.max(0, args - PARAM_REGISTERS);
+    final int temps = lastSpigletTemp() + 1;
+    final int ret = Math.max(stackargs + temps, SAVE_REGISTERS) + Math.min(PARAM_REGISTERS, args);
+  	return ret;
+  }
+  
+  public void Procedure.printKanga() {
+    final StringBuilder kb = kangaBuilder();
+
+  	getLabel().printKanga();
+
+    final int temps = lastSpigletTemp() + 1;
+    final int args = getParams();
+    final int maxCallArgs = maxCallArgs();
+    final int stacksize = getStackSize();
+
+    final int usedSaveRegs = Math.max(0, Math.min(temps - Math.min(args, PARAM_REGISTERS), SAVE_REGISTERS));
+	final int args2Move = Math.min(Math.max(0, args - PARAM_REGISTERS), SAVE_REGISTERS);
+
+
+    // Procedure header
+  	kb.append(" [" + args +"]"); // arguments
+    kb.append("[" + stacksize +"]"); // 
+    kb.append("[" + maxCallArgs + "] ");
+	kb.append("\n");
+	
+	// save s registers to t registers because the stack slots are not free (args)
+	for (int i = 0; i < args2Move; i++) {
+		kb.append(String.format("MOVE t%d s%d%n", i, i));
+	}
+	
+	
+	// save s registers directly to stack because the stackslots are free
+	for (int i = args2Move; i < usedSaveRegs; i++) {
+		kb.append(String.format("ASTORE SPILLEDARG %d s%1$d\n", i));
+	}
+	
+	// write first passed values from stack to s registers
+	for (int i = 0; i < Math.min(args - PARAM_REGISTERS, SAVE_REGISTERS); i++) {
+		kb.append(String.format("ALOAD s%d SPILLEDARG %1$d\n", i));
+	}
+	
+	// write the old s registers from t to the first slots of the stack
+	for (int i = 0; i < args2Move ; i++) {
+		kb.append(String.format("ASTORE SPILLEDARG %d t%1$d\n", i));
+	}
+	
+	getStmtsRet().printKanga();
+
+
+    // restore s registers
+	for (int i = 0; i < usedSaveRegs ; i++) {
+		kb.append(String.format("ALOAD s%d SPILLEDARG %1$d\n", i));
+	}
+	
+	kb.append("END\n");
+
+  	kb.append("\n");
+  }
+  
+  public abstract void Stmt.printKanga();
+  public void Noop.printKanga() {
+  	kangaBuilder().append("NOOP");
+  }
+  public void Err.printKanga() {
+  	kangaBuilder().append("ERROR");
+  }
+  public void CJump.printKanga() {
+  	StringBuilder kb = kangaBuilder();
+ 	 String arg = null;
+    try {
+   		arg = regOf(getCond().getNumber());
+   	} catch (UnsupportedOperationException e) {
+   		String loadArg = stack2Reg(getCond().getNumber(), "t1");
+   		arg = "t1";
+   		kb.append(loadArg);
+   	}
+	
+  	kb.append(String.format("CJUMP %s ", arg));
+  	getLabel().printKanga();
+  }
+  public void Jump.printKanga() {
+  	kangaBuilder().append("JUMP ");
+  	getLabel().printKanga();
+  }
+  public void HStore.printKanga() {
+    final StringBuilder kb = kangaBuilder();
+  	String arg1;
+	try {
+   		arg1 = regOf(getAddr().getNumber());
+   	} catch (UnsupportedOperationException e) {
+   		String loadArg1 = stack2Reg(getAddr().getNumber(), "t1");
+   		arg1 = "t1";
+   		kb.append(loadArg1);	
+   	}
+   	String arg2;
+	try {
+   		arg2 = regOf(getValue().getNumber());
+   	} catch (UnsupportedOperationException e) {
+   		String loadArg2 = stack2Reg(getValue().getNumber(), "t2");
+   		arg2 = "t2";
+   		kb.append(loadArg2);	
+   	}
+   	
+	kb.append(String.format("HSTORE %s %s %s ", arg1, getOffset().toString(), arg2));
+  }
+  public void HLoad.printKanga() {
+    final StringBuilder kb = kangaBuilder();
+  	String arg1;
+	try {
+   		arg1 = regOf(getDest().getNumber());
+   	} catch (UnsupportedOperationException e) {
+   		String loadArg1 = stack2Reg(getDest().getNumber(), "t1");
+   		arg1 = "t1";
+   		kb.append(loadArg1);	
+   	}
+   	String arg2;
+	try {
+   		arg2 = regOf(getAddr().getNumber());
+   	} catch (UnsupportedOperationException e) {
+   		String loadArg2 = stack2Reg(getAddr().getNumber(), "t2");
+   		arg2 = "t2";
+   		kb.append(loadArg2);	
+   	}
+   	
+	kb.append(String.format("HLOAD %s %s %s ", arg1, arg2, getOffset().toString()));
+  }
+  public void Move.printKanga() {
+    final StringBuilder kb = kangaBuilder();
+
+    final int tmpNumber = getDest().getNumber();
+    final int nst = nonSpilledTemps();
+    
+    String arg = null;
+    
+    if (getSource().isTemp()) {
+    	try {
+	   		arg = regOf(((TempExp)getSource()).getTemp().getNumber());
+	   	} catch (UnsupportedOperationException e) {
+	   		String loadArg = stack2Reg(((TempExp)getSource()).getTemp().getNumber(), "t1");
+	   		arg = "t1";
+	   		kb.append(loadArg);
+	   	}
+	} 
+    
+    if (tmpNumber < nst) { // speichert temp im register
+        kb.append("MOVE ");
+        kb.append(regOf(tmpNumber));
+        kb.append(" ");
+        if (arg == null) {
+        	getSource().printKanga();
+        } else {
+        	kb.append(arg);
+        }
+    } else { // speichert temp auf dem stack
+        kb.append("MOVE t0 ");
+        if (arg == null) {
+        	getSource().printKanga();
+        } else {
+        	kb.append(arg);
+        }
+        kb.append(String.format("\nASTORE SPILLEDARG %d t0 /* temp %d */", tmpNumber - nst + SAVE_REGISTERS, tmpNumber));
+    }
+  }
+
+  public void Print.printKanga() {
+  	StringBuilder kb = kangaBuilder();
+  	if (getValue().isTemp()) {
+    	String arg;
+    	try {
+	   		arg = regOf(((TempExp)getValue()).getTemp().getNumber());
+	   	} catch (UnsupportedOperationException e) {
+	   		String loadArg = stack2Reg(((TempExp)getValue()).getTemp().getNumber(), "t1");
+	   		arg = "t1";
+	   		kb.append("/* load temp before PRINT */\n");
+	   		kb.append(loadArg);	
+	   	}
+	   	kb.append(String.format("PRINT %s /* temp %d*/", arg, ((TempExp)getValue()).getTemp().getNumber()));
+    } else { // kann nur noch ein int sein
+    	kb.append("/* PRINT SExp */\n");
+  		kb.append("PRINT ");
+  		getValue().printKanga();	
+  	}
+  	
+  }
+
+  public void StmtExp.printKanga() {
+  	StringBuilder kb = kangaBuilder();
+    for (LabeledStmt s : getStmtss()) s.printKanga();
+    
+    if (getRetExp().isTemp()) {
+    	String arg;
+    	try {
+	   		arg = regOf(((TempExp)getRetExp()).getTemp().getNumber());
+	   		kb.append(String.format("MOVE v0 %s /* temp %d*/%n", arg, ((TempExp)getRetExp()).getTemp().getNumber()));
+	   	} catch (UnsupportedOperationException e) {
+	   		String loadArg = stack2Reg(((TempExp)getRetExp()).getTemp().getNumber(), "v0");
+	   		kb.append(loadArg);
+	   	}
+	} else { 
+		kb.append("MOVE v0 ");
+		getRetExp().printKanga();
+		kb.append("\n");    
+    }
+    // end tag set procedure
+  }	 
+  
+  public abstract void Exp.printKanga();
+  
+  public boolean Exp.isTemp() {
+    return this instanceof TempExp;
+  }
+  
+  public void Call.printKanga() {
+  	ASTNode ctx = enclosingContext();
+  	int stacksize = 0;
+  	int argReg = 0;
+  	
+  	if (ctx instanceof Procedure) {
+  		stacksize = ((Procedure)ctx).getStackSize();
+  		argReg = nonSpilledTemps() - SAVE_REGISTERS;
+  	}
+  
+    StringBuilder kb = kangaBuilder();
+    
+    int offset = kb.lastIndexOf("MOVE"); // kann eh nur nach einem MOVE stehen
+
+    // a0 - a3 retten    
+    for (int i = 0; i < argReg; i++) {
+    	String save = String.format("ASTORE SPILLEDARG %d a%d%n", stacksize - argReg + i, i);
+    	kb.insert(offset, save);
+    	offset += save.length();
+    }
+    
+    // parameter setzen
+    
+    for (int i = 0; i < getNumParam(); i++) {
+    	String arg;
+    	try {
+	   		arg = regOf(getParam(i).getNumber());
+	   		
+	   		/**
+			 * wenn es ein a register ist, dann nimm das gesicherte register
+			 */
+			 
+			 if (arg.startsWith("a")) {
+			 	int id = Integer.parseInt(arg.substring(1)); 	 	
+			 	if (i < PARAM_REGISTERS) {
+			 	    // liegt auf dem stack und kann direkt in ein a register geladen werden
+				 	String loadArg = String.format("ALOAD a%d SPILLEDARG %d%n", i, stacksize - argReg + id);
+		   			kb.insert(offset, loadArg);
+		   			offset += loadArg.length();
+		   			continue;
+			 	} else {
+				 	String loadArg = String.format("ALOAD %s SPILLEDARG %d%n", "t1", stacksize - argReg + id);
+				 	arg = "t1";
+		   			kb.insert(offset, loadArg);
+		   			offset += loadArg.length();
+			 	}
+			 	
+			 }
+	   		
+	   	} catch (UnsupportedOperationException e) {
+	   		if (i < PARAM_REGISTERS) {
+		 	    // liegt auf dem stack und kann direkt in ein a register geladen werden
+			 	String loadArg = stack2Reg(getParam(i).getNumber(), "a" + i);
+		   		kb.insert(offset, loadArg);
+		   		offset += loadArg.length();
+	   			continue;
+		 	} else {
+			 	String loadArg = stack2Reg(getParam(i).getNumber(), "t1");
+		   		arg = "t1";
+		   		kb.insert(offset, loadArg);
+		   		offset += loadArg.length();
+		 	}
+	   	}
+	   	
+	   	String move;
+	   	if (i < PARAM_REGISTERS) {
+	   		move = String.format("MOVE a%d %s%n", i, arg);
+	   	} else {
+	   		move = String.format("PASSARG %d %s%n", i - 3, arg);
+	   	}
+	   	kb.insert(offset, move); 
+	   	offset += move.length();
+    }
+    
+    // name holen
+    
+    if (getName().isTemp()) {
+    	String arg;
+    	try {
+	   		arg = regOf(((TempExp)getName()).getTemp().getNumber());
+	   	} catch (UnsupportedOperationException e) {
+	   		String loadArg = stack2Reg(((TempExp)getName()).getTemp().getNumber(), "t1");
+	   		arg = "t1";
+	   		kb.insert(offset, loadArg);	
+	   		offset += loadArg.length();
+	   	}
+	   	
+	   	String call = String.format("CALL %s%n", arg);
+	   	kb.insert(offset, call);
+	   	offset += call.length();
+    } else {
+    	if (getName() instanceof LabelExp) {
+    		String call = String.format("CALL %s%n", ((LabelExp)getName()).getLabel().getLabel());
+    		kb.insert(offset, call);
+    		offset += call.length();
+    	} else {
+    		throw new IllegalStateException("bad label for call");
+    	}
+    }
+    
+    // a0-a3 wiederherstellen
+    for (int i = 0; i < argReg; i++) {
+    	String restore = String.format("ALOAD a%d SPILLEDARG %d%n", i, stacksize - argReg + i);
+    	kb.insert(offset, restore);
+    	offset += restore.length();
+    }
+    
+    kb.append("v0\n"); // MOVE ... v0
+  }	 
+  public void HAlloc.printKanga() {
+    final StringBuilder kb = kangaBuilder();
+   	
+    if (getSize().isTemp()) {
+    	int offset = kb.lastIndexOf("MOVE"); // black magic from hell and outa space !!!!
+    	String arg;
+    	try {
+	   		arg = regOf(((TempExp)getSize()).getTemp().getNumber());
+	   	} catch (UnsupportedOperationException e) {
+	   		String loadArg = stack2Reg(((TempExp)getSize()).getTemp().getNumber(), "t1");
+	   		arg = "t1";
+	   		kb.insert(offset, loadArg);	
+	   		offset += loadArg.length();
+	   	}
+	   	//kb.insert(offset, String.format("MOVE t2 TIMES %s 4%n", arg));
+	   	kb.append(String.format("HALLOCATE %s", arg));
+    } else {
+    	if (getSize() instanceof IntLiteral) {
+    		//kb.append(String.format("HALLOCATE %d", ((IntLiteral)getSize()).getInteger() * 4));
+    		kb.append(String.format("HALLOCATE %d", ((IntLiteral)getSize()).getInteger()));
+    	} else {
+    		throw new IllegalStateException("ups somethings go wrong");
+    	}
+    }
+  }
+  public void TempExp.printKanga() {
+  	getTemp().printKanga();
+  }
+  public void LabelExp.printKanga() {
+  	getLabel().printKanga();
+  }
+  
+  
+  /**
+   * @param op Operation
+   */
+  protected void Binop.binHelper(String op) {
+    final StringBuilder kb = kangaBuilder();
+   	
+   	
+   	String arg1;
+   	try {
+   		arg1 = regOf(getLeft().getNumber());
+   	} catch (UnsupportedOperationException e) {
+   		int offset = kb.lastIndexOf("MOVE");
+   		String loadArg1 = stack2Reg(getLeft().getNumber(), "t1");
+   		arg1 = "t1";
+   		kb.insert(offset, loadArg1);	
+   	}
+    
+    if (getRight().isTemp()) {
+    	String arg2;
+    	try {
+	   		arg2 = regOf(((TempExp)getRight()).getTemp().getNumber());
+	   	} catch (UnsupportedOperationException e) {
+	   		int offset = kb.lastIndexOf("MOVE");
+	   		String loadArg2 = stack2Reg(((TempExp)getRight()).getTemp().getNumber(), "t2");
+	   		arg2 = "t2";
+	   		kb.insert(offset, loadArg2);	
+	   	}
+	   	
+	   	kb.append(String.format("%s %s %s", op, arg1, arg2));
+    } else {
+    	kb.append(String.format("%s %s ", op, arg1));
+    	getRight().printKanga();
+    }
+  } 
+  
+  public void Lt.printKanga() {
+    binHelper("LT");
+  }
+  public void Plus.printKanga() {
+    binHelper("PLUS");
+  }
+  public void Minus.printKanga() {
+    binHelper("MINUS");
+  }
+  public void Times.printKanga() {
+    binHelper("TIMES");
+  }
+  public void IntLiteral.printKanga() {
+  	kangaBuilder().append(getInteger().toString());
+  } 
+  public void Label.printKanga() {
+  	kangaBuilder().append(getLabel());
+  }
+  public void Temp.printKanga() {
+  	kangaBuilder().append("TEMP " + getNumber().toString());
+  }
+}

@@ -1,0 +1,130 @@
+<project name="MiniJava" default="compile" basedir=".">
+
+  <property name="parser.name" value="MJParser"/>
+
+  <property name="package" value="minijava"/>
+
+  <property name="src.dir" value="src"/>
+  <property name="junit-test.dir" value="junit"/>
+  <property name="grammar.dir" value="compiler"/>
+  <property name="gen.dir" value="${basedir}/gen"/>
+  <property name="classes.dir" value="bin"/>
+  <property name="tools"   value="tools"/>
+  <property name="report" location="report/"/>
+  <property name="support"   value="support"/>
+  
+    <path id="junit.class.path">
+        <pathelement location="${tools}/junit.jar" />
+        <pathelement location="${tools}/hamcrest-core.jar" />
+        <pathelement location="${tools}/beaver-rt.jar" />
+        <pathelement location="${classes.dir}" />
+    </path>
+
+  <taskdef name="jflex"   classname="JFlex.anttask.JFlexTask" classpath="${tools}/JFlex.jar"/>
+  <taskdef name="beaver"  classname="beaver.comp.run.AntTask" classpath="${tools}/beaver.jar"/>
+  <taskdef name="jastadd" classname="jastadd.JastAddTask" classpath="${tools}/jastadd2.jar" />
+
+  <target name="scanner">
+    <mkdir dir="${gen.dir}/${package}"/>
+    <jflex file="${grammar.dir}/MJScanner.flex" outdir="${gen.dir}/${package}" nobak="true" />
+  </target>
+
+  <target name="parser">
+    <mkdir dir="${gen.dir}/${package}"/>
+    <beaver file="${grammar.dir}/MJParser.beaver" destdir="${gen.dir}/${package}" terminalNames="yes" compress="no" useSwitch="yes" reportActions="yes" />
+  </target>
+  
+  <target name="piglet">
+      <ant antfile="build_piglet.xml" target="preprocess" inheritall="false"/>
+  </target>
+  
+  <target name="spiglet">
+      <ant antfile="build_spiglet.xml" target="preprocess" inheritall="false"/>
+  </target>
+  
+  <target name="kanga">
+      <ant antfile="build_kanga.xml" target="preprocess" inheritall="false"/>
+  </target>
+
+  <target name="jastadd">
+    <mkdir dir="${gen.dir}"/>
+    <jastadd package="${package}" grammar="${grammar.dir}" outdir="${gen.dir}" beaver="true" debug="true">
+        <fileset dir=".">
+          <include name="${grammar.dir}/*.ast"/>
+          <include name="${grammar.dir}/*.jrag"/>
+          <include name="${grammar.dir}/*.jadd"/>
+        </fileset>
+      </jastadd>
+  </target>
+
+  <target name="preprocess" depends="clean,scanner,parser,jastadd,piglet,spiglet,kanga">
+  </target>
+
+
+  <target name="compile" depends="preprocess">
+     <mkdir dir="${classes.dir}"/>
+     <javac srcdir="${gen.dir}"  
+            destdir="${classes.dir}"
+            classpath="${tools}/beaver-rt.jar"
+            debug="true" debuglevel="lines,vars,source">
+             <include name="**/*.java"/>
+     </javac>
+     <javac srcdir="${src.dir}" 
+            destdir="${classes.dir}"
+            classpath="${classes.dir}:${tools}/beaver-rt.jar"
+            debug="true" debuglevel="lines,vars,source">
+            <include name="**/*.java"/>
+     </javac>
+  </target>
+  
+  <target name="compile-tests" depends="compile">
+     <javac srcdir="${junit-test.dir}"  
+            destdir="${classes.dir}"
+            classpath="${tools}/beaver-rt.jar"
+            debug="true" debuglevel="lines,vars,source">
+
+         <include name="**/*.java"/>
+         <classpath refid="junit.class.path" />
+     </javac>
+  </target>
+
+  <target name="clean">
+     <delete dir="${gen.dir}"/>
+     <delete dir="${report}"/>
+  </target>
+  
+  <target name="alltests" depends="compile">
+    <apply executable="java" parallel="false" force="true">
+      <arg value="-classpath" />
+      <arg path="${classes.dir}:${tools}/junit.jar:${tools}/beaver-rt.jar" />
+      <arg value="minijava.MJFrontEnd" />
+      <srcfile />
+        <fileset dir="tests/" includes="*.java"/>
+    </apply>
+  </target>
+
+  <target name="simpletest" depends="compile">
+    <java classpath="${classes.dir}:${tools}/junit.jar:${tools}/beaver-rt.jar"
+        classname="minijava.MJFrontEnd">
+      <arg value="tests/MainTestForPiglet.java"/>
+    </java>
+  </target>
+
+    <target name="junit" depends="compile-tests">
+        <mkdir dir="${report}"/>
+        <junit printsummary="on" fork="on" haltonfailure="no" dir="${basedir}" showoutput="yes">
+            <classpath refid="junit.class.path" />
+            <formatter usefile="false" type="brief"/>
+            <formatter type="xml"/>
+            <test name="testing.AllTests" todir="${report}" />
+        </junit>
+        <mkdir dir="${report}/all"/>
+        <junitreport todir="${report}/all">
+            <fileset dir="${report}">
+                <include name="TEST-*.xml"/>
+            </fileset>
+            <report format="noframes" todir="${report}/html"/>
+        </junitreport>
+    </target>
+    
+</project>

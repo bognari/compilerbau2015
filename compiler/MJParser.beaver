@@ -1,0 +1,159 @@
+%header {:
+ // this code is inlined before the generated parser
+package minijava;
+:};
+
+%embed {:
+public String line(beaver.Symbol sym) {
+    return String.valueOf(beaver.Symbol.getLine(sym.getStart()));
+}
+public String column(beaver.Symbol sym) {
+    return String.valueOf(beaver.Symbol.getColumn(sym.getStart()));
+}
+:};
+
+%terminals CLASS, EXTENDS, PUBLIC, STATIC, VOID, MAIN,
+    STRING, INT, BOOLEAN, THIS, TRUE, FALSE, NEW,
+    LENGTH, IF, ELSE, WHILE, RETURN, PRINTLN,
+    LCURLY, LPAR, RCURLY, RPAR, LSQ, RSQ,
+    AND, PLUS, MINUS, TIMES, LT, NOT, ASSIGN,
+    DOT, SEMICOLON, COMMA,
+    ID, INTEGER;
+
+%typeof Goal = "Program";
+%typeof INTEGER = "Integer";
+%typeof Exp = "Exp";
+%typeof ExpList, ParamList, VarDeclList, StatementList, MethodDeclList, ClassDeclList = "List";
+%typeof MainClass = "MainClass";
+%typeof ClassDecl = "ClassDecl";
+%typeof MethodDecl = "MethodDecl";
+%typeof VarDecl = "TypedVar";
+%typeof Type = "TypeUse";
+%typeof Statement = "Stmt";
+%typeof ID = "String";
+
+%left DOT;
+%left LSQ;
+%left TIMES;
+%left PLUS, MINUS;
+%left LT;
+%right NOT;
+%left AND;
+
+%goal Goal;
+
+// Productions with semantic actions building the JastAdd AST
+
+Goal = MainClass.main ClassDeclList.classes {: return new Program(main, classes); :};
+
+MainClass = CLASS ID.name LCURLY
+    PUBLIC STATIC VOID MAIN
+    LPAR STRING LSQ RSQ ID.args RPAR
+    LCURLY VarDeclList.vars StatementList.stmts RCURLY
+    RCURLY
+{: return new MainClass(line(_symbol_name), column(_symbol_name), name, args, vars, stmts); :};
+
+ClassDecl = CLASS ID.name EXTENDS ID.base LCURLY VarDeclList.vars MethodDeclList.methods RCURLY
+{: return new ClassDecl(line(_symbol_name), column(_symbol_name), name, base, vars, methods); :}
+          | CLASS ID.name LCURLY VarDeclList.vars MethodDeclList.methods RCURLY
+{: return new ClassDecl(line(_symbol_name), column(_symbol_name), name, null, vars, methods); :};
+
+ClassDeclList = {: return new List(); :}
+              | ClassDeclList.cl ClassDecl.c {: cl.add(c); return cl; :};
+
+MethodDecl = PUBLIC Type.rettype ID.name LPAR ParamList.params RPAR LCURLY
+    VarDeclList.vars StatementList.stmts RETURN Exp.retexp SEMICOLON RCURLY
+{: return new MethodDecl(line(_symbol_name), column(_symbol_name), name, rettype, params, vars, stmts, retexp); :};
+
+MethodDeclList = {: return new List(); :}
+               | MethodDecl.m MethodDeclList.ml {: ml.insertChild(m, 0); return ml; :};
+
+VarDecl = Type.type ID.name SEMICOLON
+{: return new TypedVar(line(_symbol_name), column(_symbol_name), name, type); :};
+
+VarDeclList = {: return new List(); :}
+            | VarDeclList.vl VarDecl.vd {: vl.add(vd); return vl; :};
+
+Type = INT.kw LSQ RSQ
+{: return new IntArray(line(kw), column(kw)); :}
+     | BOOLEAN.kw
+{: return new Bool(line(kw), column(kw)); :}
+     | INT.kw
+{: return new Int(line(kw), column(kw)); :}
+     | ID.name
+{: return new ClassT(line(_symbol_name), column(_symbol_name), name); :};
+
+ParamList =
+{: return new List(); :}
+          | Type.type ID.name
+{: List l = new List(); l.add(new TypedVar(line(_symbol_name), column(_symbol_name), name, type)); return l; :}
+          | ParamList.pl COMMA Type.type ID.name
+{: return pl.add(new TypedVar(line(_symbol_name), column(_symbol_name), name, type)); :};
+
+Statement = LCURLY.brace StatementList.stmts RCURLY
+{: return new Block(line(brace), column(brace), stmts); :}
+    | ID.var ASSIGN Exp.e SEMICOLON
+{: return new Assign(line(_symbol_var), column(_symbol_var), var, e); :}
+    | IF.kw LPAR Exp.b RPAR Statement.t ELSE Statement.f
+{: return new If(line(kw), column(kw), b, t, f); :}
+    | WHILE.kw LPAR Exp.b RPAR Statement.s
+{: return new While(line(kw), column(kw), b, s); :}
+    | PRINTLN.kw LPAR Exp.e RPAR SEMICOLON
+{: return new Print(line(kw), column(kw), e); :}
+    | ID.arr LSQ Exp.idx RSQ ASSIGN Exp.e SEMICOLON
+{: return new ArrayAssign(line(_symbol_arr), column(_symbol_arr), arr, idx, e); :};
+
+StatementList = {: return new List(); :}
+              | Statement.s StatementList.sl {: sl.insertChild(s, 0); return sl; :};
+
+Exp = Exp.arr LSQ.sq Exp.idx RSQ
+{: return new ArrayLookup(line(sq), column(sq), arr, idx); :}
+    | Exp.arr DOT LENGTH.kw
+{: return new ArrayLength(line(kw), column(kw), arr); :}
+    | Exp.obj DOT ID.method LPAR ExpList.args RPAR
+{: return new MethodCall(line(_symbol_method), column(_symbol_method), obj, method, args); :}
+    | NEW.kw INT LSQ Exp.size RSQ
+{: return new ArrayAlloc(line(kw), column(kw), size); :}
+    | NEW.kw ID.clazz LPAR RPAR
+{: return new ObjAlloc(line(kw), column(kw), clazz); :}
+    | Exp.l AND.op Exp.r
+{: return new And(line(op), column(op), l, r); :}
+    | Exp.l LT.op Exp.r
+{: return new Cmp(line(op), column(op), l, r); :}
+    | Exp.l PLUS.op Exp.r
+{: return new Add(line(op), column(op), l, r); :}
+    | Exp.l MINUS.op Exp.r
+{: return new Sub(line(op), column(op), l, r); :}
+    | Exp.l TIMES.op Exp.r
+{: return new Mult(line(op), column(op), l, r); :}
+    | NOT.op Exp.e
+{: return new Not(line(op), column(op), e); :}
+    | MINUS.op Exp.e
+{:
+    // optimize double neg
+    if (e instanceof Neg) {
+        return ((Neg)e).getExp();
+    } else {
+        return new Neg(line(op), column(op), e);
+    }
+:}
+    | PLUS Exp.e
+{: return e; /* optimized away */ :}
+    | LPAR Exp.e RPAR
+{: return e; :}
+    | TRUE.kw
+{: return new True(line(kw), column(kw)); :}
+    | FALSE.kw
+{: return new False(line(kw), column(kw)); :}
+    | ID.obj
+{: return new IdentUse(line(_symbol_obj), column(_symbol_obj), obj); :}
+    | INTEGER.val
+{: return new IntLiteral(line(_symbol_val), column(_symbol_val), val); :}
+    | THIS.kw
+{: return new This(line(kw), column(kw)); :}
+    ;
+
+ExpList = {: return new List(); :}
+        | Exp.e {: List l = new List(); l.add(e); return l; :}
+        | ExpList.l COMMA Exp.e {: l.add(e); return l; :};
+

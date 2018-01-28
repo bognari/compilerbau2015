@@ -1,0 +1,18 @@
+class Main {
+    public static void main (String[] args) {
+        Test t;
+        int z;
+        t = new Test();
+        System.out.println(t.fun(z));
+    }
+}
+
+class Test {
+    public int fun(int z) {
+        int x;
+        int y;
+        x = 5;
+        System.out.println(3 + x);
+        return y + z;
+    }
+}

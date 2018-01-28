@@ -1,0 +1,322 @@
+import java.util.*;
+
+aspect errors {
+
+    public abstract class SemanticError {
+        private String message;
+        public SemanticError(WithCodeInfo astnode, String m) {
+            message = "Line "+astnode.getLineNo()+" column "+astnode.getColOff() + ": "+ m;
+        }
+        public String getMessage() {return message;}
+    }
+    public class TypeError extends SemanticError {
+        public TypeError(WithCodeInfo astnode, String m) {super(astnode, m);}
+    }
+    public class NameError extends SemanticError {
+        public NameError(WithCodeInfo astnode, String m) {super(astnode, m);}
+    }
+
+    public boolean Program.hasErrors() {
+        return getNameErrors().size() > 0 || getTypeErrors().size() > 0;
+    }
+
+    syn Set<NameError> Program.getNameErrors() {
+        Set<NameError> nameErrors = new HashSet<NameError>();
+        collectNameErrors(nameErrors);
+        return nameErrors;
+    }
+
+    syn Set<TypeError> Program.getTypeErrors() {
+        Set<TypeError> typeErrors = new HashSet<TypeError>();
+        collectTypeErrors(typeErrors);
+        collectUninitErrors(typeErrors, null);
+        return typeErrors;
+    }
+
+    public void ASTNode.collectNameErrors(Set<NameError> s) {
+        if (children == null) return;
+        for (ASTNode c : children) {
+            if (c!=null) c.collectNameErrors(s);
+        }
+    }
+
+    public void ASTNode.collectTypeErrors(Set<TypeError> s) {
+        if (children == null) return;
+        for (ASTNode c : children) {
+            if (c != null) c.collectTypeErrors(s);
+        }
+    }
+
+    public void ASTNode.collectUninitErrors(Set<TypeError> s, java.util.List<String> initialized) {
+        if (children == null) return;
+        for (ASTNode c : children) {
+            if (c != null) {
+                if (c instanceof MethodDecl || c instanceof MainClass) {
+                    java.util.List<String> newscope = new ArrayList<String>();
+                    if (c instanceof MethodDecl) {
+                        final MethodDecl meth = (MethodDecl)c;
+                        final ClassDecl cd = (ClassDecl)(meth.enclosingClass());
+                        for (TypedVar f : cd.getFieldss()) {
+                            newscope.add(f.getIdent());
+                        }
+                        for (TypedVar f : meth.getFormalParamss()) {
+                            newscope.add(f.getIdent());
+                        }
+                    }
+                    c.collectUninitErrors(s, newscope);
+                } else {
+                    c.collectUninitErrors(s, initialized);
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Name errors
+    // -----------------------------------------------------------------------
+
+    public void Program.collectNameErrors(Set<NameError> s) {
+        // we don't care this is a O(n^2) check
+        for (int i = 0 ; i < getNumDecls() ; i++) {
+            ClassDecl cd = getDecls(i);
+            for (int j = i+1 ; j < getNumDecls() ; j++) {
+                ClassDecl cd2 = getDecls(j);
+                if (cd.getIdent().equals(cd2.getIdent())) {
+                    s.add(new NameError(cd2, String.format(
+                        "Redefinition of class %s. First defined in line %s column %s.",
+                        cd.getIdent(), cd.getLineNo(), cd.getColOff())));
+                }
+            }
+        }
+        super.collectNameErrors(s);
+    }
+
+    public void ClassDecl.collectNameErrors(Set<NameError> s) {
+        for (int i = 0 ; i < getNumMethods() ; i++) {
+            MethodDecl meth = getMethods(i);
+            for (int j = i+1 ; j < getNumMethods() ; j++) {
+                MethodDecl meth2 = getMethods(j);
+                if (meth.getIdent().equals(meth2.getIdent())) {
+                    s.add(new NameError(meth2, String.format(
+                        "Redefinition of method %s. First defined in line %s column %s.",
+                        meth.getIdent(), meth.getLineNo(), meth.getColOff())));
+                }
+            }
+        }
+        super.collectNameErrors(s);
+    }
+
+    public void Assign.collectNameErrors(Set<NameError> s) {
+        if (decl() == null) {
+            s.add(new NameError(this, "Undeclared variable "+getName()));
+        }
+        super.collectNameErrors(s);
+    }
+
+    public void IdentUse.collectNameErrors(Set<NameError> s) {
+        if (decl() == null) {
+            s.add(new NameError(this, "Undeclared variable "+getName()));
+        }
+        super.collectNameErrors(s);
+    }
+
+    public void ObjAlloc.collectNameErrors(Set<NameError> s) {
+        if (decl() == null) {
+            s.add(new NameError(this, "Undeclared type "+getName()));
+        }
+        super.collectNameErrors(s);
+    }
+
+    public void ClassT.collectNameErrors(Set<NameError> s) {
+        if (decl() == null) {
+            s.add(new NameError(this, "Undeclared type "+getName()));
+        }
+        super.collectNameErrors(s);
+    }
+
+    public void MethodCall.collectNameErrors(Set<NameError> s) {
+        if (decl() == null) {
+            s.add(new NameError(this, "Undeclared method "+getName()+" on type "+getObj().ctType()));
+        }
+        super.collectNameErrors(s);
+    }
+
+    // -----------------------------------------------------------------------
+    // Type mismatch errors
+    // -----------------------------------------------------------------------
+
+    public void Exp.collectTypeErrors(Set<TypeError> s) {
+        // we descent first and try to find the deepest error
+        super.collectTypeErrors(s);
+        CompileTimeType t = ctType();
+
+        // don't report an error, if we don't expect a type (another error handler must handle such a case)
+        // and don't report an error, if the found type is undefined (it's likely that a deeper node has already reported the error)
+        if (t.isUndefined() && t.getExpected() != null && t.getFound() != null && !t.getFound().isUndefined()) {
+            s.add(new TypeError(this, String.format(
+                "Incompatible types in expression (expected %s, found %s)",
+                t.getExpected(), t.getFound())));
+        }
+    }
+
+    public void Assign.collectTypeErrors(Set<TypeError> s) {
+        super.collectTypeErrors(s); // descent
+
+        CompileTimeType lhsT = new CompileTimeType(varEnv().lookup(getName()).getType());
+        CompileTimeType rhsT = getRhs().ctType();
+
+        if (lhsT.isUndefined() || rhsT.isUndefined()) return; // an error for this is already reported
+
+        
+        if (!rhsT.assignableFrom(lhsT, typeEnv())) {
+            s.add(new TypeError(this, String.format("Type mismatch in assignment (expected %s, found %s)",
+                lhsT, rhsT)));
+        }
+    }
+
+    public void ArrayAssign.collectTypeErrors(Set<TypeError> s) {
+        super.collectTypeErrors(s); // descent
+
+        CompileTimeType lhsT = new CompileTimeType(varEnv().lookup(getName()).getType());
+        CompileTimeType offT = getOffset().ctType();
+        CompileTimeType rhsT = getExp().ctType();
+
+        if (!offT.isUndefined() && !offT.isInt()) {
+            s.add(new TypeError(getOffset(), "Expected int type, but found " + offT));
+        }
+
+        if (!lhsT.isUndefined() && !lhsT.isIntArray()) {
+            s.add(new TypeError(this, "Expected array type on, but found " + lhsT));
+        }
+
+        if (!rhsT.isUndefined() && !rhsT.isInt()) {
+            s.add(new TypeError(getExp(), "Expected int type, but found " + rhsT));
+        }
+    }
+
+    public void If.collectTypeErrors(Set<TypeError> s) {
+        super.collectTypeErrors(s); // descent
+
+        Exp exp = getCond();
+        CompileTimeType t = exp.ctType();
+        if (!t.isUndefined() && !t.isBoolean()) {
+            s.add(new TypeError(exp, "Expected boolean type, but found " + t));
+        }
+    }
+
+    public void While.collectTypeErrors(Set<TypeError> s) {
+        super.collectTypeErrors(s); // descent
+
+        Exp exp = getCond();
+        CompileTimeType t = exp.ctType();
+        if (!t.isUndefined() && !t.isBoolean()) {
+            s.add(new TypeError(exp, "Expected boolean type, but found " + t));
+        }
+    }
+
+    public void Print.collectTypeErrors(Set<TypeError> s) {
+        super.collectTypeErrors(s); // descent
+
+        Exp exp = getExp();
+        CompileTimeType t = exp.ctType();
+        if (!t.isUndefined() && !(t.isInt() || t.isBoolean())) {
+            s.add(new TypeError(exp, "Expected int type, but found " + t));
+        }
+    }
+
+    public void MethodDecl.collectTypeErrors(Set<TypeError> s) {
+        super.collectTypeErrors(s); // descent
+
+        CompileTimeType actualType = getRetExp().ctType();
+        CompileTimeType expectedType = new CompileTimeType(getRetType());
+
+        if (actualType.isUndefined() || expectedType.isUndefined()) return; // an error for this is already reported
+
+        if (!actualType.assignableFrom(expectedType, typeEnv())) {
+            s.add(new TypeError(this, String.format("Type mismatch in return type (expected %s, found %s)",
+                expectedType, actualType)));
+        }
+    }
+
+    public void MethodCall.collectTypeErrors(Set<TypeError> s) {
+        super.collectTypeErrors(s); // descent
+
+        MethodDecl decl = decl();
+        if (decl == null) return; // name error
+
+        if (decl.getNumFormalParams() == getNumArgs()) {
+            for (int i = 0 ; i < getNumArgs() ; i++) {
+                CompileTimeType act = getArgs(i).ctType();
+                CompileTimeType expected = new CompileTimeType(decl.getFormalParams(i).getType());
+                if (!act.assignableFrom(expected, typeEnv())) {
+                    s.add(new TypeError(getArgs(i), String.format("Type mismatch in argument %d (expected %s, found %s)",
+                        i, expected, act)));
+                }
+            }
+        } else {
+            StringBuilder act = new StringBuilder(decl.getIdent()+"(");
+            for (int i = 0 ; i < getNumArgs() ; i++) {
+                Exp exp = getArgs(i);
+                act.append(exp.ctType());
+                if (i < getNumArgs() - 1) act.append(", ");
+            }
+            act.append(")");
+
+            StringBuilder expected = new StringBuilder(decl.getIdent()+"(");
+            for (int i = 0 ; i < decl.getNumFormalParams() ; i++) {
+                TypedVar var = decl.getFormalParams(i);
+                expected.append(new CompileTimeType(var.getType()));
+                if (i < decl.getNumFormalParams() - 1) expected.append(", ");
+            }
+            expected.append(")");
+
+            s.add(new TypeError(this, String.format("%s not applicable for %s",
+                expected, act)));
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Uninitialized variable errors
+    // -----------------------------------------------------------------------
+
+    public void If.collectUninitErrors(Set<TypeError> s, java.util.List<String> initialized) {
+        // a variable is initialized after an if statement,
+        // iff it was initialized before or it is initialized in both branches
+
+        getCond().collectUninitErrors(s, initialized);
+        java.util.List<String> trueScope = new ArrayList<String>();
+        java.util.List<String> falseScope = new ArrayList<String>();
+        
+        trueScope.addAll(initialized);
+        falseScope.addAll(initialized);
+
+        getTStmt().collectUninitErrors(s, trueScope);
+        getFStmt().collectUninitErrors(s, falseScope);
+
+        for (String v : trueScope) {
+            if (falseScope.contains(v) && !initialized.contains(v)) {
+                initialized.add(v);
+            }
+        }
+    }
+
+    public void While.collectUninitErrors(Set<TypeError> s, java.util.List<String> initialized) {
+        // Assignments in while statements do not initialize variables
+        java.util.List<String> newScope = new ArrayList<String>();
+        newScope.addAll(initialized);
+        getCond().collectUninitErrors(s, newScope);
+        getBody().collectUninitErrors(s, newScope);
+    }
+
+    public void Assign.collectUninitErrors(Set<TypeError> s, java.util.List<String> initialized) {
+        initialized.add(getName());
+        super.collectUninitErrors(s, initialized);
+    }
+    
+    public void IdentUse.collectUninitErrors(Set<TypeError> s, java.util.List<String> initialized) {
+        if (!initialized.contains(getName())) {
+            s.add(new TypeError(this, "variable "+getName()+" might not have been initialized"));
+        }
+        super.collectUninitErrors(s, initialized);
+    }
+}

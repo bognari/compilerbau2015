@@ -1,0 +1,48 @@
+Aufgabe 1:
+
+Lexer-JFlex -> definiert Token
+Parser-Beaver -> prüft die Grammatikeinhaltung
+		 baut mit Hilfe von JastAdd den AST für Minijava auf
+
+Operator-Reihenfolge: wie in Java-> Umsetztung in Beaver mittels Priorität durch die Reihenfolge
+
+Associtivity: wird automatisch von Beaver beachtet
+
+Bugs die gelöst wurden: Operatorenreihenfole zu erst nicht richtig
+      Arrayklammern haben nicht richtig gebunden
+
+Aufgabe 2: 
+
+Über den AST traversieren und Attribute anhängen (Bsp.: CompiletimeType =syn) (von unten nach oben)
+Prüfen ob alle erwarteten Typen = wirklichen Typen sind
+
+Aufgabe 3:
+
+minijava AST -> Piglet String erzeugen durch print -> Aus String Piglet AST bauen
+	Knoten für Knoten übersetzten und ausgeben
+	Run-Time für OO (Zeiger auf Speicherstellen und Methoden nach Memory-Modell siehe andere txt)
+	virtuelle Objekttabelle: stehen Addressen für Methoden und Objekte (1: Classloader 2: Prüft ob wir auf der Speicherstelle 1 sind
+	3:Speichert Labels und Methoden)
+	Run-Time für Array zum aufrufen der Arrayoperationen (Length, ...)
+	minijava-AST hat den Variablen schon eigene im Kontext unique ID's zugewiesen, die für die Temps verwendet werden
+	-> Vorteil: keine Funktion die Variablennamen auf Temps abbildet
+
+Labels: werden erzeugt mit einem Index der automatisch erhöht wird
+
+Boolean-Darstellung: 0 = false; 1 = true
+
+Bugs die gelöst wurden: Rekusrion: Attribute in Speicher laden -> beim Verlassen speichern	
+				Lösung: kein Cachen
+
+Aufgabe 4:
+
+Piglet AST -> String für Spiglet erzeugen durch print -> Aus String SPiglet AST erzeugen
+	MAX-Temp = 10000
+	Einfügen von zusätzlich benötigten MOVE Anweisungen da keine Verschachtelung (in Zwischenergebnisse aufgesplittet)
+		Finden sinnvoller TEMP'S: vom MAX-Temp 10 nach unten
+	StmtExp wird in einzelne Anweisungen zerlegt
+    Zuletzt Verbesserung: statt neue Temps von 10000 runterzählen zu lassen,
+    höchste Temp-Nr als Syn-Attribut im jeweiligen Kontext (Program/Procedure)
+    ausrechnen und ab dort hochzählen
+	
+	

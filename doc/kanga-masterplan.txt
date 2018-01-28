@@ -1,0 +1,52 @@
+1. put all temps on stack
+2. use save registers by mapping temporaries 1:1
+3. handle function arguments separately
+4. die alten s register muessen gesichert werden, bevor unsere temps und argumente in die register geladen werden
+5. laden der s register in die t register
+6. laden der stack Elemente 0 is 7 (falls mehr als 4 Parameter existieren) in die s Register
+7. nach dem Welchseln sind die Stackelemente 0 bis 7 frei und koennen als Speicher fuer die alten s Register
+genommen werden, die ist besser weil im schlimmsten Fall steht in Element 8 der 13 Parameter der Funktion. Somit ist
+es sinnvoll immer einen Offset von 8 zu verwenden.
+8. da die Argumentregister als Zwischenspeicher dienen, muessen diese vor einem Funktionsaufruf gesichert werden,
+hierfuer werden am Ende des Stacks 0 bis 4 Plaetze reserviert
+
+
+Example:
+A function has 2 arguments.
+
+old s0 - s1 is spilled to SPILLEDARG 0 - 7
+        ...
+TEMP 0 is mapped to a0
+TEMP 1 is mapped to a1
+TEMP 2 is mapped to s0
+TEMP 3 is mapped to s1
+        ...
+TEMP 9 is mapped to s7
+TEMP 10 is spilled to SPILLEDARG 8
+TEMP 11 is spilled to SPILLEDARG 9
+        ...
+at function call:
+a0 is spilled to SPILLEDARG stacksize - Math.min(args.size(), 4) + 1
+a1 is spilled to SPILLEDARG stacksize - Math.min(args.size(), 4) + 2
+
+
+A function has 6 arguments.
+
+old s0 - s1 is spilled to SPILLEDARG 0 - 7
+        ...
+TEMP 0 is mapped to a0
+TEMP 1 is mapped to a1
+TEMP 2 is mapped to a2
+TEMP 3 is mapped to a3
+TEMP 4 is mapped to s0 (copied from SPILLEDARG 0 (by PASSARG))
+TEMP 5 is mapped to s1 (copied from SPILLEDARG 1 (by PASSARG))
+        ...
+TEMP 11 is mapped to s7
+TEMP 12 is spilled to SPILLEDARG 8 (after argument has been copied before)
+TEMP 13 is spilled to SPILLEDARG 9 (after argument has been copied before)
+        ...
+at function call:
+a0 is spilled to SPILLEDARG stacksize - Math.min(args.size(), 4) + 1
+a1 is spilled to SPILLEDARG stacksize - Math.min(args.size(), 4) + 2
+a2 is spilled to SPILLEDARG stacksize - Math.min(args.size(), 4) + 3
+a3 is spilled to SPILLEDARG stacksize - Math.min(args.size(), 4) + 4

@@ -1,0 +1,412 @@
+aspect SPigletGenerator {
+
+  syn lazy StringBuilder Program.spigletBuilder() {
+    return new StringBuilder();
+  }
+  eq Program.getStmts().spigletBuilder() = this.spigletBuilder();
+  eq Program.getProcs().spigletBuilder() = this.spigletBuilder();
+  
+  inh lazy StringBuilder LabeledStmt.spigletBuilder();
+  inh lazy StringBuilder Procedure.spigletBuilder();
+  inh lazy StringBuilder Stmt.spigletBuilder();
+  inh lazy StringBuilder Exp.spigletBuilder();
+  inh lazy StringBuilder Label.spigletBuilder();
+  inh lazy StringBuilder Temp.spigletBuilder();
+  
+  syn StringBuilder Program.printSpiglet() {
+    spigletBuilder().append("MAIN\n");
+    for (LabeledStmt s : getStmtss()) s.printSpiglet(0);
+    spigletBuilder().append("\nEND\n");
+    for (Procedure p : getProcss()) p.printSpiglet();
+    return spigletBuilder();
+  }
+
+  public abstract int Context.lastPigletTemp();
+  public Context ASTNode.enclosingContext() {
+    return null; // hack hack hack
+  }
+
+  inh lazy Context LabeledStmt.enclosingContext();
+  inh lazy Context Stmt.enclosingContext();
+  inh lazy Context Exp.enclosingContext();
+  eq Program.getStmts().enclosingContext() = this;
+  eq Procedure.getStmtsRet().enclosingContext() = this;
+
+  public int ASTNode.lastPigletTemp() {
+    int t = 0;
+    for (int i = 0 ; i < getNumChild() ; i++) {
+        ASTNode child = getChild(i);
+        t = Math.max(t, child.lastPigletTemp());
+    }
+    return t;
+  }
+
+  public int ASTNode.lastPigletTempInContext() {
+    Context ctx = enclosingContext();
+    if (ctx == null) throw new IllegalStateException();
+    return ctx.lastPigletTemp();
+  }
+
+  syn lazy int Program.lastPigletTemp() {
+    int t = 0;
+    for (LabeledStmt s : getStmtss()) {
+        t = Math.max(t, s.lastPigletTemp());
+    }
+    return t;
+  }
+
+  syn lazy int Procedure.lastPigletTemp() = getStmtsRet().lastPigletTemp();
+  syn lazy int LabeledStmt.lastPigletTemp() = getStmt().lastPigletTemp();
+
+  syn int Temp.lastPigletTemp() {
+    return getNumber();
+  }
+
+  public static final int ASTNode.alloctemp(int lastPgTemp, int used, int idx) {
+    return lastPgTemp + used + idx;
+  }
+
+  public void LabeledStmt.printSpiglet(int used) {
+    final StringBuilder sb = spigletBuilder();
+    if (hasLabel()) {
+        getLabel().printSpiglet();
+        sb.append(" ");
+    }
+    getStmt().printSpiglet(used);
+  }  
+ 
+  public void Procedure.printSpiglet() {
+    getLabel().printSpiglet();
+    spigletBuilder().append(" [" + getInteger().toString() +"] ");
+    getStmtsRet().printSpiglet(0);
+    spigletBuilder().append("\n");
+  }
+  
+  public abstract void Stmt.printSpiglet(int used);
+
+  public void Noop.printSpiglet(int used) {
+      spigletBuilder().append("NOOP\n");
+  }
+  public void Err.printSpiglet(int used) {
+      spigletBuilder().append("ERROR\n");
+  }
+
+  public void CJump.printSpiglet(int used) {
+    final StringBuilder sb = spigletBuilder();
+    if (getCond().isTemp()) {
+        sb.append("CJUMP ");
+        getCond().printSpiglet(used);
+        sb.append(" ");
+        getLabel().printSpiglet();
+    } else {
+        final int tmp = alloctemp(lastPigletTempInContext(), used, 1);
+        getCond().printToTemp(tmp, used + 1);
+        sb.append(String.format("CJUMP TEMP %d ", tmp));
+        getLabel().printSpiglet();
+    }
+    sb.append("\n");
+  }
+
+  public void Jump.printSpiglet(int used) {
+    final StringBuilder sb = spigletBuilder();
+    sb.append("JUMP ");
+    getLabel().printSpiglet();
+    sb.append("\n");
+  }
+
+  public void HStore.printSpiglet(int used) {
+    final StringBuilder sb = spigletBuilder();
+    final int tmp1 = alloctemp(lastPigletTempInContext(), used, 1);
+    final int tmp2 = alloctemp(lastPigletTempInContext(), used, 2);
+    if (getAddr().isTemp()) {
+        if (getValue().isTemp()) {
+            sb.append("HSTORE ");
+            getAddr().printSpiglet(used);
+            sb.append(" " + getOffset().toString() + " ");
+            getValue().printSpiglet(used);
+        } else {
+            getValue().printToTemp(tmp1, used + 1);
+            sb.append("HSTORE ");
+            getAddr().printSpiglet(used + 1);
+            sb.append(" " + getOffset().toString() + String.format(" TEMP %d", tmp1));
+        }
+    } else {
+        if (getValue().isTemp()) {
+            getAddr().printToTemp(tmp1, used + 1);
+            sb.append(String.format("HSTORE TEMP %d ", tmp1));
+            sb.append(" " + getOffset().toString() + " ");
+            getValue().printSpiglet(used + 1);
+        } else {
+            getAddr().printToTemp(tmp1, used + 2);
+            getValue().printToTemp(tmp2, used + 2);
+            sb.append(String.format("HSTORE TEMP %d ", tmp1));
+            sb.append(" " + getOffset().toString() + String.format(" TEMP %d", tmp2));
+        }
+    }
+    sb.append("\n");
+  }
+
+  public void HLoad.printSpiglet(int used) {
+    final StringBuilder sb = spigletBuilder();
+    final int tmp = alloctemp(lastPigletTempInContext(), used, 1);
+    if (getAddr().isTemp()) {
+        sb.append("HLOAD ");
+        getDest().printSpiglet();
+        sb.append(" ");
+        getAddr().printSpiglet(used);
+        sb.append(" " + getOffset().toString());
+    } else {
+        getAddr().printToTemp(tmp, used + 1);
+        sb.append("HLOAD ");
+        getDest().printSpiglet();
+        sb.append(" ");
+        sb.append(String.format("TEMP %d", tmp));
+        sb.append(" " + getOffset().toString());
+    }
+    sb.append("\n");
+  }
+
+  public void Move.printSpiglet(int used) {
+    final StringBuilder sb = spigletBuilder();
+    if (getSource().isTemp()) {
+        sb.append("MOVE ");
+        getDest().printSpiglet();
+        sb.append(" ");
+        getSource().printSpiglet(used);
+    } else {
+        getSource().printToTemp(getDest().getNumber(), used);
+    }
+    sb.append("\n");
+  }
+
+  public void Print.printSpiglet(int used) {
+    final StringBuilder sb = spigletBuilder();
+    if (getValue().isSimple()) {
+        sb.append("PRINT ");
+        getValue().printSpiglet(used);
+    } else {
+        final int tmp = alloctemp(lastPigletTempInContext(), used, 1);
+        getValue().printToTemp(tmp, used + 1);
+        sb.append(String.format("PRINT TEMP %d", tmp));
+    }
+    sb.append("\n");
+  }
+
+  // -------------------------------------------------------------------------
+  // EXPRESSIONS
+  // -------------------------------------------------------------------------
+
+  public boolean Exp.isTemp() {
+    return this instanceof TempExp;
+  }
+
+  public boolean Exp.isSimple() {
+    return isTemp() || isLiteral() || this instanceof LabelExp;
+  }
+
+  public boolean Exp.isLiteral() {
+    return this instanceof IntLiteral;
+  }
+
+  public abstract void Exp.printToTemp(int tmp, int used);
+  
+  /*
+   * all binary operations, HALLOCATE, CALL and StmtExp should put their result
+   * to lastPigletTempInContext()+1 by default. For all other expressions, this method should
+   * remain abstract!
+   * (So simple expressions can give their own, simple translations)
+   */
+
+  public abstract void Exp.printSpiglet(int used);
+  public void Binop.printSpiglet(int used) {
+    printToTemp(alloctemp(lastPigletTempInContext(), used, 1), used + 1);
+  }
+  public void Call.printSpiglet(int used) {
+    printToTemp(alloctemp(lastPigletTempInContext(), used, 1), used + 1);
+  }
+  public void HAlloc.printSpiglet(int used) {
+    printToTemp(alloctemp(lastPigletTempInContext(), used, 1), used + 1);
+  }
+  public void StmtExp.printSpiglet(int used) {
+    printToTemp(alloctemp(lastPigletTempInContext(), used, 1), used + 1);
+  }
+
+  public void StmtExp.printToTemp(int tmp, int used) {
+    final StringBuilder sb = spigletBuilder();
+    final boolean isProcBody = getParent() instanceof Procedure;
+
+    if (isProcBody) {
+        sb.append("BEGIN\n");
+    }
+
+    for (LabeledStmt s : getStmtss()) s.printSpiglet(used);
+    
+    if (getRetExp().isSimple()) {
+        if (isProcBody) {
+            // ignore that we should print to a temp and return it directly
+            sb.append("RETURN ");
+            getRetExp().printSpiglet(used);
+            sb.append(" END\n");
+        } else {
+            getRetExp().printToTemp(tmp, used);
+            sb.append("\n");
+        }
+    } else {
+        getRetExp().printToTemp(tmp, used);
+        if (isProcBody) {
+            sb.append(String.format("RETURN TEMP %d END\n", tmp));
+        }
+    }
+  }     
+  
+  public void Call.printToTemp(int tmp, int used) {
+    final StringBuilder sb = spigletBuilder();
+
+    final int tempUsage = 1 + getNumParam(); // worst case
+
+    // store parameters first, because their computation might kill our temporary for the name
+    java.util.List<String> parameters = new java.util.LinkedList<String>();    
+    for (int i = 0; i < getNumParam(); i++) {
+        final Exp p = getParam(i);
+        final int paramTemp;
+        if (p.isTemp()) {
+            paramTemp = ((TempExp)p).getTemp().getNumber();
+        } else {
+            paramTemp = alloctemp(lastPigletTempInContext(), used, 1+i);
+            p.printToTemp(paramTemp, used + tempUsage);
+        }
+        parameters.add(String.format("TEMP %d", paramTemp));
+    }
+
+    // lookup name and store it in a temp, when the expression is too complex
+    final String name;      
+    if (getName().isSimple()) {
+        if (getName().isTemp()) {
+            name = String.format("TEMP %d",((TempExp)getName()).getTemp().getNumber());
+        } else {
+            // in theory this could lead to an exception, when "name" is an IntLiteral
+            // but this simply doesn't happen in correctly translated piglet code
+            name = String.format("%s",((LabelExp)getName()).getLabel().getLabel());
+        }
+    } else {
+        final int nameTemp = alloctemp(lastPigletTempInContext(), used, tempUsage);
+        getName().printToTemp(nameTemp, used + tempUsage);
+        name = String.format("TEMP %d", nameTemp);
+    }
+      
+    sb.append(String.format("MOVE TEMP %d CALL %s (", tmp, name));
+    for (String s : parameters) {
+        sb.append(s);
+        sb.append(" ");
+    }
+    sb.append(")\n");
+  }
+  
+  public void HAlloc.printToTemp(int tmp, int used) {
+    final StringBuilder sb = spigletBuilder();
+    if (getSize().isSimple()) {
+        sb.append(String.format("MOVE TEMP %d HALLOCATE ", tmp));
+        getSize().printSpiglet(used);
+    } else {
+        final int atmp = alloctemp(lastPigletTempInContext(), used, 1);
+        getSize().printToTemp(atmp, used + 1);
+        sb.append(String.format("MOVE TEMP %d HALLOCATE TEMP %d", tmp , atmp));
+    }
+    sb.append("\n");
+  }
+    
+  public void TempExp.printSpiglet(int used) {
+    // we just want to print out a temp, so we don't need 'used'
+    getTemp().printSpiglet();
+  }
+
+  public void TempExp.printToTemp(int tmp, int used) {
+    // we just want to copy a temp, so we don't need 'used'
+    final StringBuilder sb = spigletBuilder();
+    sb.append(String.format("MOVE TEMP %d ", tmp));
+    getTemp().printSpiglet();
+  }
+
+  public void LabelExp.printSpiglet(int used) {
+    getLabel().printSpiglet();
+  }
+  
+  public void LabelExp.printToTemp(int tmp, int used) {
+    final StringBuilder sb = spigletBuilder();
+    sb.append(String.format("MOVE TEMP %d ", tmp));
+    getLabel().printSpiglet();
+    sb.append("\n");
+  }
+  
+  
+  /**
+   * @param op Operation
+   * @param tmp result moved to target TEMP
+   * @param used already used temps
+   */
+  protected void Binop.printToTemp(String op, int tmp, int used) {
+    final StringBuilder sb = spigletBuilder();
+    final int tmp1 = alloctemp(lastPigletTempInContext(), used, 1);
+    final int tmp2 = alloctemp(lastPigletTempInContext(), used, 2);
+    if (getRight().isSimple()) {
+        if (getLeft().isTemp()) {
+            sb.append(String.format("MOVE TEMP %d %s ", tmp, op));
+            getLeft().printSpiglet(used);
+            sb.append(" ");
+            getRight().printSpiglet(used);
+            sb.append("\n");
+        } else {
+            getLeft().printToTemp(tmp1, used + 1);
+            sb.append(String.format("MOVE TEMP %d %s TEMP %d ",
+                tmp, op, tmp1));
+            getRight().printSpiglet(used + 1);
+            sb.append("\n");
+        }
+    } else {
+        if (getLeft().isTemp()) {
+            getRight().printToTemp(tmp1, used + 1);
+            sb.append(String.format("MOVE TEMP %d %s ", tmp, op));
+            getLeft().printSpiglet(used + 1);
+            sb.append(String.format(" TEMP %d%n", tmp1));
+        } else {
+            getRight().printToTemp(tmp1, used + 2);
+            getLeft().printToTemp(tmp2, used + 2);
+            sb.append(String.format("MOVE TEMP %d %s TEMP %d TEMP %d%n",
+                tmp, op, tmp2, tmp1));
+        }
+    }
+  }
+
+  public void Lt.printToTemp(int tmp, int used) {
+    printToTemp("LT", tmp, used);
+  }
+
+  public void Plus.printToTemp(int tmp, int used) {
+    printToTemp("PLUS", tmp, used);
+  }
+
+  public void Minus.printToTemp(int tmp, int used) {
+    printToTemp("MINUS", tmp, used);
+  }
+
+  public void Times.printToTemp(int tmp, int used) {
+    printToTemp("TIMES", tmp, used);
+  }
+
+  public void IntLiteral.printToTemp(int tmp, int used) {
+    spigletBuilder().append(String.format("MOVE TEMP %d %s\n", tmp, getInteger().toString()));
+  }
+
+  public void IntLiteral.printSpiglet(int used) {
+    // ignored used, because we don't need it for literals
+    spigletBuilder().append(getInteger().toString());
+  }
+
+  public void Label.printSpiglet() {
+    spigletBuilder().append(getLabel());
+  }
+
+  public void Temp.printSpiglet() {
+    spigletBuilder().append("TEMP " + getNumber().toString());
+  }
+}

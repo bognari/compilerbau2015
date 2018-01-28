@@ -1,0 +1,581 @@
+aspect PigletGenerator {
+
+  public static int ASTNode.WORD_SIZE = 4;
+
+  syn lazy StringBuilder Program.pigletBuilder() {
+    return new StringBuilder();
+  }
+  eq Program.getMain().pigletBuilder() = this.pigletBuilder();
+  eq Program.getDecls().pigletBuilder() = this.pigletBuilder();
+
+  inh lazy StringBuilder Decl.pigletBuilder();
+  inh lazy StringBuilder TypeUse.pigletBuilder();
+  inh lazy StringBuilder Stmt.pigletBuilder();
+  inh lazy StringBuilder Exp.pigletBuilder();
+
+  public static boolean Program.printPiglet_HelpUseArrays(VarEnv env) {
+    for (String symbol : env.declaredSymbols()) {
+        if (env.lookup(symbol).getType() instanceof IntArray) {
+            return true;
+        }
+    }
+    return false;
+  }
+
+  syn lazy boolean MethodDecl.usesArrays() {
+    return Program.printPiglet_HelpUseArrays(varEnv());
+  }
+
+  syn lazy boolean AbstractClassDecl.usesArrays() {
+    return Program.printPiglet_HelpUseArrays(varEnv());
+  }
+
+  syn lazy boolean Program.usesArrays() {
+    if (getMain().usesArrays()) {
+        return true;
+    }
+    for (ClassDecl cd : getDeclss()) {
+        if (cd.usesArrays()) {
+            return true;
+        }
+    }
+    return false;
+  }
+
+  syn lazy int MainClass.firstFreeTemp() {
+    return getNumLocalVars() + 1; // respect classloader
+  }
+  syn lazy int MethodDecl.firstFreeTemp() {
+    return getNumFormalParams()+getNumLocalVars() + 2; // respect "this" and classloader
+  }
+  eq MethodDecl.getStmts().firstFreeTemp() = firstFreeTemp();
+  eq MethodDecl.getRetExp().firstFreeTemp() = firstFreeTemp();
+  eq MainClass.getStmts().firstFreeTemp() = firstFreeTemp();
+  inh lazy int Stmt.firstFreeTemp();
+  inh lazy int Exp.firstFreeTemp();
+
+  
+  syn StringBuilder Program.printPiglet() {
+    StringBuilder sb = pigletBuilder();
+    if (hasErrors()) return sb; // don't even try
+
+    getMain().printPiglet();
+	
+	// -------
+    // runtime
+    // -------
+    
+    // only include OOP runtime, when classes are declared
+    if (getNumDecls() > 0) {
+        // class loader
+        /*
+         * TEMP 0 = speicherstelle fuer Klasse
+         * TEMP 1 = adresse
+         */
+
+        sb.append("\nrt_classloader [0] BEGIN\n");
+        sb.append(String.format("MOVE TEMP 1 HALLOCATE %d \n", getNumDecls() * WORD_SIZE));
+        for (int cidx = 0 ; cidx < getNumDecls() ; cidx++) {
+            ClassDecl cd = getDecls(cidx);
+
+            java.util.List<String> declaredMeths = cd.declaredMethods();
+
+            int size = declaredMeths.size();
+
+            sb.append("// "+cd.getIdent());
+            sb.append(String.format("\nMOVE TEMP 0 HALLOCATE %d\n", size * WORD_SIZE));
+
+            // store reference in class table
+            sb.append(String.format("HSTORE TEMP 1 %d TEMP 0\n", cidx * WORD_SIZE));
+
+            // store method information
+            int i = 0;
+            for (String sym : declaredMeths) {
+                // we need to replace the dot...
+                sb.append(String.format("HSTORE TEMP 0 %d %s\n", i * WORD_SIZE, sym.replace(".", "_m_")));
+                i++;
+            }
+        }
+        sb.append("RETURN TEMP 1\nEND\n");
+
+        // constructor functions
+        for (int cidx = 0 ; cidx < getNumDecls() ; cidx++) {
+            ClassDecl cd = getDecls(cidx);
+            // constructor
+            java.util.List<String> declaredVars = cd.varEnv().declaredSymbols();
+
+            int size = 1 + declaredVars.size();
+
+            sb.append(String.format("\n%s_init [0] BEGIN\n", cd.getIdent()));
+
+            sb.append(String.format("MOVE TEMP 0 HALLOCATE %d\n", size * WORD_SIZE));
+
+            // store class information and zero the fields
+            sb.append(String.format("HSTORE TEMP 0 0 %d\n", cidx * WORD_SIZE));
+            int i = 1;
+            for (String sym : declaredVars) {
+                final TypeUse type = cd.varEnv().lookup(sym).getType();
+                if (type instanceof ClassT || type instanceof IntArray) {
+                    sb.append(String.format("MOVE TEMP 1 HALLOCATE %d\n", WORD_SIZE));
+                    sb.append(String.format("HSTORE TEMP 0 %d TEMP 1 // %s\n", i * WORD_SIZE, sym));
+                    sb.append("HSTORE TEMP 1 0 MINUS 0 1\n");
+                } else {
+                    sb.append(String.format("HSTORE TEMP 0 %d 0 // %s\n", i * WORD_SIZE, sym));
+                }
+                i++;
+            }
+            sb.append("RETURN TEMP 0\nEND\n");
+
+
+            // methods
+            cd.printPiglet();
+        }
+
+        // lookup function
+        // arg0: classloader, arg1: object, arg2: aligned method index
+        sb.append("\nrt_fnlookup [3] BEGIN\n");
+        sb.append("HLOAD TEMP 3 TEMP 1 0\n");
+        sb.append("CJUMP LT TEMP 3 0 fl_nothrow\n");
+        sb.append("ERROR\n");
+        sb.append("fl_nothrow ");
+        sb.append("HLOAD TEMP 3 TEMP 1 0 // index in class table\n");
+        sb.append("HLOAD TEMP 3 PLUS TEMP 0 TEMP 3 0\n");
+        sb.append("HLOAD TEMP 3 PLUS TEMP 3 TEMP 2 0 // method index\n");
+        sb.append("RETURN TEMP 3\n");
+        sb.append("END\n");
+        
+        
+        /*
+         * lookup field
+         * TEMP 0 object address
+         * TEMP 1 field index
+         * TEMP 2 field value
+         * 
+         * return field value
+         */
+        sb.append("\nrt_fieldlookup [2] BEGIN\n");
+        sb.append("HLOAD TEMP 2 PLUS TEMP 0 TEMP 1 0 // adress + field id\n");
+        sb.append("RETURN TEMP 2\nEND\n");
+        
+        /*
+         * assign field
+         * TEMP 0 object address
+         * TEMP 1 field index
+         * TEMP 2 field value
+         * 
+         * return field value
+         */
+        sb.append("\nrt_fieldassign [3] BEGIN\n");
+        sb.append("HSTORE PLUS TEMP 0 TEMP 1 0 TEMP 2 // adress + offset\n");
+        sb.append("RETURN TEMP 2\nEND\n");
+    }
+
+    if (usesArrays()) {
+        //arrayalloc
+        /*
+         * TEMP 0 = SIZE
+         * TEMP 1 = INDEX
+         * TEMP 2 = RETURN VALUE (ArrayAddress)
+         * TEMP 3 = real addr
+         * 
+         */
+        sb.append("\nrt_arrayallocproc [1] BEGIN\n");
+        sb.append("CJUMP LT 0 PLUS TEMP 0 1 arrayerror // 0 < size + 1\n");
+        sb.append(String.format("MOVE TEMP 2 HALLOCATE TIMES PLUS TEMP 0 1 %d \n", WORD_SIZE));
+        sb.append("HSTORE TEMP 2 0 TEMP 0 // speichert size in feld 0\n");
+        sb.append("MOVE TEMP 0 PLUS TEMP 0 1 // size = size + 1\n"); 
+        sb.append("MOVE TEMP 1 1 // index = 1\n");
+        sb.append(String.format("MOVE TEMP 3 PLUS TEMP 2 TIMES TEMP 1 %d\n", WORD_SIZE));
+        sb.append("awhile CJUMP LT TEMP 1 TEMP 0 aend // index < size -> aend\n");
+        sb.append("HSTORE TEMP 3 0 0 // set value to 0\n");
+        sb.append("MOVE TEMP 1 PLUS TEMP 1 1 // index ++\n");
+        sb.append(String.format("MOVE TEMP 3 PLUS TEMP 3 %d\n", WORD_SIZE));
+        sb.append("JUMP awhile\n");
+        sb.append("arrayerror ERROR // size < 0\n"); 
+        sb.append("aend NOOP\n");	
+        sb.append("RETURN TEMP 2\nEND\n");
+
+        //arraylength
+        /*
+         * TEMP 0 = array 
+         * TEMP 1 = length of array
+         */
+
+        sb.append("\nrt_arraylength [1] BEGIN\n");
+        sb.append("HLOAD TEMP 1 TEMP 0 0\n");
+        sb.append("CJUMP LT TEMP 1 0 al_nothrow\n");
+        sb.append("ERROR\n");
+        sb.append("al_nothrow NOOP\n");
+        sb.append("RETURN TEMP 1\nEND\n");
+
+        //arraylookup
+        /*
+         * TEMP 0 = Address
+         * TEMP 1 = Offset
+         * TEMP 2 = length
+         * TEMP 3 = Value
+         * TEMP 4 = Offset+1 (needed for HLOAD)
+         */
+        sb.append("\nrt_arraylookup [2] BEGIN\n");
+        sb.append("HLOAD TEMP 2 TEMP 0 0\n");
+        sb.append("CJUMP LT 0 PLUS TEMP 1 1 arraylookerror // 0  < offset + 1\n");
+        sb.append("CJUMP LT TEMP 1 TEMP 2 arraylookerror // offset < length\n");
+        sb.append(String.format("MOVE TEMP 4 TIMES PLUS TEMP 1 1 %d // offset = (offset + 1) * word_size\n", WORD_SIZE));
+        sb.append("HLOAD TEMP 3 PLUS TEMP 0 TEMP 4 0 // adress + offset\n");
+        sb.append("JUMP aloend\n");
+        sb.append("arraylookerror ERROR // IndexOutOfBounds\n"); 
+        sb.append("aloend NOOP\n");	
+        sb.append("RETURN TEMP 3\nEND\n");
+
+        //arrayassign
+        /*
+         * TEMP 0 = id
+         * TEMP 1 = offset
+         * TEMP 2 = Exp
+         * TEMP 3 = length
+         * TEMP 4 = offset+1 (needed for HSTORE)
+         * 
+         */
+        sb.append("\nrt_arrayassign [3] BEGIN\n");
+        sb.append("HLOAD TEMP 3 TEMP 0 0\n");
+        sb.append("CJUMP LT 0 PLUS TEMP 1 1 arrayasserror // 0  < offset + 1\n");
+        sb.append("CJUMP LT TEMP 1 TEMP 3 arrayasserror // offset < length\n");
+        sb.append(String.format("MOVE TEMP 4 TIMES PLUS TEMP 1 1 %d // offset = (offset + 1) * word_size\n", WORD_SIZE));
+        sb.append("HSTORE PLUS TEMP 0 TEMP 4 0 TEMP 2 // adress + (offset + 1) * 4\n");
+        sb.append("JUMP assend\n");
+        sb.append("arrayasserror ERROR // IndexOutOfBounds\n"); 
+        sb.append("assend NOOP\n");	
+        sb.append("RETURN 0\nEND\n");
+    }
+
+    return sb;
+  }
+
+  public void MainClass.printPiglet() {
+    StringBuilder sb = pigletBuilder();
+    sb.append("MAIN\n");
+
+    // call class loader, if there are any classes
+    if (!typeEnv().declaredSymbols().isEmpty()) {
+        sb.append("MOVE TEMP 0 CALL rt_classloader()\n");
+    }
+
+    for (Stmt s : getStmtss()) {
+        s.printPiglet();
+    }
+
+    sb.append("END\n");
+  }
+  
+  public void ClassDecl.printPiglet() {
+    // we just need to print out the method code
+    for (MethodDecl m : getMethodss()) {
+        m.printPiglet();
+    }
+  }
+
+  public void MethodDecl.printPiglet() {
+  	StringBuilder sb = pigletBuilder();
+    ClassDecl ec = (ClassDecl) enclosingClass();
+
+    // use" _m_" instead of a dot, because the lexer will kill us otherwise
+    sb.append(String.format("\n%s_m_%s [%d] BEGIN\n",
+        ec.getIdent(), getIdent(),
+        // by convention, "this" is second parameter and classloader is first
+        2+getNumFormalParams()));
+
+    // method body
+    for (Stmt stmt : getStmtss()) {
+        stmt.printPiglet();
+    }
+
+    sb.append("RETURN ");
+    getRetExp().printPiglet();
+    sb.append("\nEND\n");
+  }
+
+  public void TypedVar.printPiglet() {
+	/* no code generation */
+  }
+  
+  public void TypeUse.printPiglet() {
+    /* no code generation */
+  }
+  
+  public abstract void Stmt.printPiglet();
+  public void Block.printPiglet() {
+    // we can ignore blocks in Piglet, as they are "just syntax" in MiniJava
+    for (Stmt s : getStmtss()) s.printPiglet();
+  }
+  public void Assign.printPiglet() {
+  
+  	int fieldID = Program.printPiglet_HelpResolveFieldID(
+       getName(), enclosingMethod(), enclosingClass());
+        
+   	if (fieldID != -1) {
+   		pigletBuilder().append(String.format("MOVE TEMP %d CALL rt_fieldassign(TEMP 1 %d ", firstFreeTemp(), fieldID * WORD_SIZE));
+   		getRhs().printPiglet();
+   		pigletBuilder().append(String.format(") /* field: set %s */%n", getName()));
+   	} else {
+   		StringBuilder sb = pigletBuilder();
+    
+	    sb.append("MOVE ");
+	    sb.append(Program.printPiglet_HelpResolveIdent(
+	        getName(), enclosingMethod(), enclosingClass()));
+	
+	    sb.append(" ");
+	    getRhs().printPiglet();
+	    sb.append("\n");
+   	}
+  }
+
+  public void ArrayAssign.printPiglet() {
+    StringBuilder sb = pigletBuilder();
+    sb.append(String.format("MOVE TEMP %d CALL rt_arrayassign(", firstFreeTemp()));
+    sb.append(Program.printPiglet_HelpResolveIdent(
+        getName(), enclosingMethod(), enclosingClass()));
+    sb.append(" ");
+    getOffset().printPiglet();
+    sb.append(" ");
+    getExp().printPiglet();
+    sb.append(")\n");
+  }
+
+  public static int If.index = 0;
+  public void If.printPiglet() {
+  	int i = index++;
+    StringBuilder sb = pigletBuilder();
+    sb.append("CJUMP ");
+    getCond().printPiglet();
+    sb.append(" else_"+ i + "\n");
+    getTStmt().printPiglet();
+    sb.append("JUMP fi_" + i);
+    sb.append("\nelse_"+ i +" NOOP\n");
+    getFStmt().printPiglet();
+    sb.append("fi_" + i + " NOOP\n");
+  }
+
+  public static int While.index = 0;
+  public void While.printPiglet() {
+  	int i = index++;
+    StringBuilder sb = pigletBuilder();
+    sb.append("while_" + i + " CJUMP ");
+    getCond().printPiglet();
+    sb.append(" elihw_"+ i + "\n");
+    getBody().printPiglet();
+    sb.append("JUMP while_" + i);
+    sb.append("\nelihw_" + i + " NOOP\n");
+  }
+  public void Print.printPiglet() {
+    StringBuilder sb = pigletBuilder();
+    sb.append("PRINT ");
+    getExp().printPiglet();
+    sb.append("\n");
+  }
+
+  abstract void Exp.printPiglet();
+  public void And.printPiglet() {
+    // with 0 and 1 as representation, AND is equal to TIMES
+    pigletBuilder().append("TIMES ");
+    getLeft().printPiglet();
+    pigletBuilder().append(" ");
+    getRight().printPiglet();
+  }
+
+  public void Cmp.printPiglet() {
+    pigletBuilder().append("LT ");
+  	getLeft().printPiglet();
+  	pigletBuilder().append(" ");
+  	getRight().printPiglet();
+  }
+  
+  public void Add.printPiglet() {
+    pigletBuilder().append("PLUS ");
+  	getLeft().printPiglet();
+  	pigletBuilder().append(" ");
+  	getRight().printPiglet();
+  }
+
+  public void Sub.printPiglet() {
+    pigletBuilder().append("MINUS ");
+  	getLeft().printPiglet();
+  	pigletBuilder().append(" ");
+  	getRight().printPiglet();
+  }
+  public void Mult.printPiglet() {
+    pigletBuilder().append("TIMES ");
+  	getLeft().printPiglet();
+  	pigletBuilder().append(" ");
+  	getRight().printPiglet();
+  }
+  public void Not.printPiglet() {
+    pigletBuilder().append("MINUS 1 ");
+  	getExp().printPiglet(); // we can assume this is 0 or 1
+  }
+  public void Neg.printPiglet() {
+  	pigletBuilder().append("MINUS 0 ");
+  	getExp().printPiglet();
+  }
+
+  public void IdentUse.printPiglet() {
+   	pigletBuilder().append(Program.printPiglet_HelpResolveIdent(
+        getName(), enclosingMethod(), enclosingClass()));
+  }
+  
+  public static int Program.printPiglet_HelpResolveFieldID(String id, MethodDecl meth, AbstractClassDecl ec) {
+
+    if (meth != null) {
+      // lookup fields in varEnv() of class (not method!) to respect inheritance
+      ClassDecl clazz = (ClassDecl) ec;
+      java.util.List<String> fields = clazz.varEnv().declaredSymbols();
+      for (int i = 0 ; i < fields.size() ; i++) {
+          if (id.equals(fields.get(i))) {
+              return i + 1;
+          }
+      }
+    }
+    return -1;
+  }  
+  
+  public static String Program.printPiglet_HelpResolveIdent(String id, MethodDecl meth, AbstractClassDecl ec) {
+
+    if (meth == null) {
+        MainClass clazz = (MainClass) ec;
+        for (int i = 0 ; i < clazz.getNumLocalVars() ; i++) {
+            if (id.equals(clazz.getLocalVars(i).getIdent())) {
+                int j = 1 + i; // skip TEMP 0 (classloader)
+                return String.format("TEMP %d", j);
+            }
+        }
+    } else {
+        for (int i = 0 ; i < meth.getNumFormalParams() ; i++) {
+            if (id.equals(meth.getFormalParams(i).getIdent())) {
+                int j = 2 + i; // skip this and classloader
+                return String.format("TEMP %d", j);
+            }
+        }
+
+        for (int i = 0 ; i < meth.getNumLocalVars() ; i++) {
+            if (id.equals(meth.getLocalVars(i).getIdent())) {
+                int j = 2 + meth.getNumFormalParams() + i; // skip this, classloader and formal params
+                return String.format("TEMP %d", j);
+            }
+        }
+        
+        int fieldID = Program.printPiglet_HelpResolveFieldID(id, meth, ec);
+        
+	   	if (fieldID != -1) { // vereinfacht nur die get aufrufe
+	   		return String.format("CALL rt_fieldlookup(TEMP 1 %d) /* field: get %s */ ", fieldID * WORD_SIZE, id);
+   		} 
+    }
+
+    // will never happen in correct programs
+    throw new IllegalStateException("cannot translate use of identifier "+id);
+  }
+
+  public void ArrayAlloc.printPiglet() {
+    StringBuilder sb = pigletBuilder();
+    sb.append("CALL rt_arrayallocproc(");
+    getSize().printPiglet();
+    sb.append(")\n");
+    
+  }  
+  public void ObjAlloc.printPiglet() {
+    StringBuilder sb = pigletBuilder();
+
+    ClassDecl cd = decl();
+    sb.append(String.format("CALL %s_init()", cd.getIdent()));
+  }  
+  public void ArrayLookup.printPiglet() {
+    StringBuilder sb = pigletBuilder();
+    sb.append("CALL rt_arraylookup(");
+    getExp().printPiglet();
+    sb.append(" ");
+    getOffset().printPiglet();
+    sb.append(")\n");
+  }  
+  public void ArrayLength.printPiglet() {
+    StringBuilder sb = pigletBuilder();
+    sb.append("CALL rt_arraylength(");
+    getExp().printPiglet();
+    sb.append(")\n");
+  }  
+  private static int MethodCall.activeCalls = 0;
+  public void MethodCall.printPiglet() {
+  	final StringBuilder sb = pigletBuilder();
+
+    final MethodDecl enclMeth = enclosingMethod();
+    final AbstractClassDecl enclClass = enclosingClass();
+
+    final Exp obj = getObj();
+    // optimization: direct call without StmtExp
+    // true, iff obj is "this" or an identifier that does NOT denote a field    
+    boolean optimizable = obj instanceof This || (
+        obj instanceof IdentUse && Program.printPiglet_HelpResolveFieldID(
+            ((IdentUse)obj).getName(), enclMeth, enclClass) == -1);
+
+    if (!optimizable) {
+        sb.append("BEGIN ");
+    }
+
+    // compute object address (we need it twice, so we must use a temporary)
+    final String temp;
+    if (optimizable) {
+        if (obj instanceof This) {
+            temp = "TEMP 1";
+        } else {
+            temp = Program.printPiglet_HelpResolveIdent(((IdentUse)obj).getName(), enclMeth, enclClass);
+        }
+    } else {
+        // first unused temporary is our "magic" temporary for method calls 
+        int t = firstFreeTemp();
+        temp = "TEMP "+ (t + activeCalls);
+        activeCalls++; 
+        sb.append(String.format("MOVE %s ", temp));
+        obj.printPiglet();
+    }
+
+    // call object and return result
+    if (!optimizable) {
+        sb.append(" RETURN ");
+    }
+    // use classloader in TEMP 0
+    sb.append(String.format("CALL /* %s */ CALL rt_fnlookup(TEMP 0 ", decl().getQualifiedIdent().replace(".", "_m_")));
+    sb.append(temp);
+
+    // compute the index of the method
+    sb.append(String.format(" %d) ",
+        typeEnv().lookup(getObj().ctType().getTypeName()).
+        declaredMethods().indexOf(decl().getQualifiedIdent()) * WORD_SIZE
+    ));
+
+    // append arguments
+    sb.append("(");
+    sb.append("TEMP 0 ");
+    sb.append(temp);
+    for (Exp arg : getArgss()) {
+        sb.append(" ");
+        arg.printPiglet();
+    }
+    sb.append(")");
+
+    if (!optimizable) {
+        sb.append(" END");
+        activeCalls--;
+    }
+  }
+
+  public void IntLiteral.printPiglet() {
+  	pigletBuilder().append(getInteger());
+  } 
+  public void True.printPiglet() {
+  	pigletBuilder().append("1");
+  }
+  public void False.printPiglet() {
+  	pigletBuilder().append("0");
+  }
+  public void This.printPiglet() {
+    // by convention
+  	pigletBuilder().append("TEMP 1");
+  }
+}

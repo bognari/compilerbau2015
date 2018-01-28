@@ -1,0 +1,308 @@
+aspect MIPSGenerator {
+
+  public static int ASTNode.WORD_SIZE = 4;
+
+  syn lazy StringBuilder Program.mipsBuilder() {
+  	return new StringBuilder();
+  }
+  eq Program.getStmts().mipsBuilder() = this.mipsBuilder();
+  eq Program.getProcs().mipsBuilder() = this.mipsBuilder();
+  
+  inh lazy StringBuilder LabeledStmt.mipsBuilder();
+  inh lazy StringBuilder Procedure.mipsBuilder();
+  inh lazy StringBuilder Stmt.mipsBuilder();
+  inh lazy StringBuilder Exp.mipsBuilder();
+  inh lazy StringBuilder Label.mipsBuilder();
+  inh lazy StringBuilder SpilledArg.mipsBuilder();
+  
+  syn StringBuilder Program.printMIPS() {
+    final StringBuilder mb = mipsBuilder();
+
+    // Data segment
+    mb.append(".data\n");
+    mb.append("newl:    ");
+    mb.append(".asciiz \"\\n\"\n");
+    mb.append("error:    ");
+    mb.append(".asciiz \"ERROR\"\n");
+
+    mb.append(".text\n");
+    mb.append(".globl main\n");
+    mb.append("main:\n");
+    mb.append("sw $ra, ($sp)\naddi $sp, $sp, -4\n"); // save return address
+    mb.append("move $fp, $sp\n");
+    mb.append("addi $sp, $sp, -" + WORD_SIZE*getStackSlots() + "\n");
+
+    for (LabeledStmt s : getStmtss()) s.printMIPS();
+
+    // don't invoke syscall for exit - the SPIM runtime will do this
+    // return to __start routine
+    mb.append("addi $sp, $sp, " + WORD_SIZE*getStackSlots() + "\n");
+
+    // restore return address and exit
+    mb.append("addi $sp, $sp, 4\nlw $ra, ($sp)\n");
+    mb.append("jr $ra\n");
+
+    for (Procedure p : getProcss()) p.printMIPS();
+    
+    /*
+     * Runtime für print
+     * @param: $a0 Wert der ausgegeben werden soll
+     */
+    mb.append("\n.globl rt_print\n");
+    mb.append("rt_print:\n");
+    mb.append("li $v0, 1\n");
+    mb.append("syscall\n");
+    mb.append("la $a0, newl\n");
+    mb.append("li $v0, 4\n");
+    mb.append("syscall\n");
+    mb.append("jr $ra\n");
+    
+    
+    /*
+    *Runtime for errors
+    * 
+    */
+    mb.append("\n.globl rt_printerror\n");
+    mb.append("rt_printerror:\n");
+    mb.append("la $a0, error\n");
+    mb.append("li $v0, 4\n");
+    mb.append("syscall\n");
+    mb.append("li $v0, 10\n");
+    mb.append("syscall\n");
+
+    
+    return mb;
+  }
+
+  public void LabeledStmt.printMIPS() {
+    if (hasLabel()) {
+        getLabel().printMIPS();
+        mipsBuilder().append(": ");
+    }
+  	getStmt().printMIPS();
+    mipsBuilder().append("\n");
+  }
+ 
+  public void Procedure.printMIPS() {
+    final StringBuilder mb = mipsBuilder();
+
+    mb.append("\n.globl ");
+    getLabel().printMIPS();
+    mb.append("\n");
+  	getLabel().printMIPS();
+  	mb.append(":\n");
+    mb.append("sw $ra, ($sp)\n"); // save return address
+    mb.append("sw $fp, -4($sp)\naddi $sp, $sp, -8\n"); // and frame pointer
+    mb.append("move $fp, $sp\n");
+
+    mb.append(String.format("addi $sp, $sp, -%d\n", getStackSlots()*WORD_SIZE));
+
+    for (LabeledStmt s : getStmtss()) s.printMIPS();
+
+    mb.append(String.format("addi $sp, $sp, %d\n", getStackSlots()*WORD_SIZE));
+
+    // restore $ra and $fp and jump back
+    mb.append("addi $sp, $sp, 8\nlw $fp, -4($sp)\n");
+    mb.append("lw $ra, ($sp)\njr $ra\n");
+  }
+  
+  public abstract void Stmt.printMIPS();
+  public void Noop.printMIPS() {
+  	mipsBuilder().append("nop");
+  }
+  public void Err.printMIPS() {
+  	final StringBuilder mb = mipsBuilder();
+  	mb.append("j rt_printerror");
+  }
+  public void CJump.printMIPS() {
+  	final StringBuilder mb = mipsBuilder();
+  	mb.append("beqz ");
+    getCond().printMIPS();
+    mb.append(", ");
+    getLabel().printMIPS();
+  }
+  public void Jump.printMIPS() {
+  	mipsBuilder().append("j ");
+  	getLabel().printMIPS();
+  }
+  public void HStore.printMIPS() {
+  	mipsBuilder().append("sw ");
+    getValue().printMIPS();
+  	mipsBuilder().append(String.format(", %d(", getOffset()));
+    getAddr().printMIPS();
+    mipsBuilder().append(")");
+  }
+  public void HLoad.printMIPS() {
+  	mipsBuilder().append("lw ");
+  	getDest().printMIPS();
+  	mipsBuilder().append(String.format(", %d(", getOffset()));
+  	getAddr().printMIPS();
+  	mipsBuilder().append(")");
+  }
+    
+  public void Move.printMIPS() {
+  	final StringBuilder mb = mipsBuilder();
+    final Exp src = getSource();
+    final Reg dst = getDest();
+
+  	if (src instanceof Binop) {
+        Binop op = (Binop) src;
+        op.destOp(dst);
+        return;
+  	} else if (src instanceof IntLiteral) {
+        mb.append("li");
+  	} else if (src instanceof Reg) {
+        mb.append("move");
+    } else if (src instanceof HAlloc) {
+        SExp size = ((HAlloc) src).getSize();
+        mb.append("sw $a0, ($sp)\naddi $sp, $sp, -4\n"); // save $a0
+        if (size instanceof IntLiteral) {
+            mb.append("li $a0, ");
+        } else {
+            mb.append("move $a0, ");
+        }
+        size.printMIPS();
+        mb.append("\nli $v0, 9\n");
+        mb.append("syscall\n");
+        mb.append("move ");
+        dst.printMIPS();
+        mb.append(", $v0\n");
+        mb.append("addi $sp, $sp, 4\nlw $a0, ($sp)\n"); // restore $a0
+        return;
+    } else if (src instanceof LabelExp) {
+        mb.append("la");
+    } else {
+        throw new UnsupportedOperationException("Moving "+src+" is not supported");
+    }
+    mb.append(" ");
+    dst.printMIPS();
+    mb.append(", ");
+    src.printMIPS();
+  }
+  public void Print.printMIPS() {
+  	final StringBuilder mb = mipsBuilder();
+    mb.append("sw $a0, ($sp)\n");
+    mb.append("addi $sp, $sp, -4\n");
+    if (getValue() instanceof IntLiteral) {
+        mb.append("li $a0, ");
+    } else {
+        mb.append("move $a0, ");
+    }
+  	getValue().printMIPS();
+  	mb.append("\njal rt_print\n");
+    mb.append("addi $sp, $sp, 4\n");
+    mb.append("lw $a0, ($sp)");
+  }
+  public void ALoad.printMIPS() {
+    mipsBuilder().append("lw ");
+    getDest().printMIPS();
+    mipsBuilder().append(", ");
+    getStackPos().printMIPS();
+  }
+  public void AStore.printMIPS() {
+    mipsBuilder().append("sw ");
+    getValue().printMIPS();
+    mipsBuilder().append(", ");
+    getStackPos().printMIPS();
+  }
+  public void PassArg.printMIPS() {
+
+    final int frameOffset = 8; // space on stack for saving frame info
+    
+    mipsBuilder().append("sw ");
+    getValue().printMIPS();
+    mipsBuilder().append(String.format(", %d($sp) ", -1*(frameOffset+WORD_SIZE*(getStackIndex()-1))));
+  }
+  public void Call.printMIPS() {
+    if (getAddr() instanceof LabelExp) {
+        mipsBuilder().append("jal ");
+    } else {
+        mipsBuilder().append("jalr ");
+    }
+    getAddr().printMIPS();
+  }
+  
+  public abstract void Exp.printMIPS();
+  public void HAlloc.printMIPS() {
+    final StringBuilder mb = mipsBuilder();
+    mb.append("li $a0 ");
+    getSize().printMIPS();
+    mb.append("\n");
+    mb.append("jal rt_halloc");
+  }
+  public void LabelExp.printMIPS() {
+  	getLabel().printMIPS();
+  }
+  
+  public void Binop.printMIPS() {
+    throw new IllegalStateException("Encountered binary operation out of move context.");
+  }
+  public abstract void Binop.destOp(Reg dest);
+  
+  protected void Binop.destOp(String op, Reg dest, Reg left, Integer right) {
+  	final StringBuilder mb = mipsBuilder();
+  	mb.append(op);
+    mb.append(" ");
+    dest.printMIPS();
+    mb.append(", ");
+    getLeft().printMIPS();
+    mb.append(String.format(", %d", right));
+  }
+
+  protected void Binop.destOp(String op, Reg dest, Reg left, String right) {
+  	final StringBuilder mb = mipsBuilder();
+  	mb.append(op);
+    mb.append(" ");
+    dest.printMIPS();
+    mb.append(", ");
+    getLeft().printMIPS();
+    mb.append(", $");
+    mb.append(right);
+  }
+   
+  public void Lt.destOp(Reg dest) {
+    if (getRight() instanceof IntLiteral) {
+        destOp("slti", dest, getLeft(), ((IntLiteral)getRight()).getInteger());
+    } else {
+        destOp("slt", dest, getLeft(), ((Reg)getRight()).getReg());
+    }
+  }
+  public void Plus.destOp(Reg dest) {
+    if (getRight() instanceof IntLiteral) {
+        destOp("addi", dest, getLeft(), ((IntLiteral)getRight()).getInteger());
+    } else {
+        destOp("add", dest, getLeft(), ((Reg)getRight()).getReg());
+    }
+  }
+  public void Minus.destOp(Reg dest) {
+    if (getRight() instanceof IntLiteral) {
+        destOp("addi", dest, getLeft(), -1*((IntLiteral)getRight()).getInteger());
+    } else {
+        destOp("sub", dest, getLeft(), ((Reg)getRight()).getReg());
+    }
+  }
+  public void Times.destOp(Reg dest) {
+    if (getRight() instanceof IntLiteral) {
+        mipsBuilder().append("li $t3, ");
+        getRight().printMIPS();
+        mipsBuilder().append("\n");
+        destOp("mulo", dest, getLeft(), "t3");
+    } else {
+        destOp("mulo", dest, getLeft(), ((Reg)getRight()).getReg());
+    }
+  }
+  
+  
+  public void IntLiteral.printMIPS() {
+  	mipsBuilder().append(getInteger().toString());
+  }
+  public void Reg.printMIPS() {
+    mipsBuilder().append("$"+getReg());
+  }
+  public void SpilledArg.printMIPS() {
+    mipsBuilder().append(-1*getPos()*WORD_SIZE+"($fp)");
+  } 
+  public void Label.printMIPS() {
+  	mipsBuilder().append(getLabel());
+  }
+}

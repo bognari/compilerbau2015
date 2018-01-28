@@ -1,0 +1,224 @@
+aspect nameanalysis {
+
+    public class Env<T extends Decl> {
+        protected Map<String, T> map = new HashMap<String, T>();
+
+        // we also maintain a list, because we need exact ordering
+        protected java.util.List<String> declared = new java.util.ArrayList<String>();
+
+        public Env() {}
+        public Env(Env<T> parent) {
+            for (String n : parent.declared) {
+                declared.add(n);
+                map.put(n, parent.map.get(n));
+            }
+        }
+
+        public void enter(T decl) {
+            if (map.put(decl.getIdent(), decl) == null) {
+                declared.add(decl.getIdent());
+            }
+        }
+        public T lookup(String name) {
+            return map.get(name);
+        }
+        public java.util.List<String> declaredSymbols() {
+            return Collections.unmodifiableList(declared);
+        }
+    }
+    public class VarEnv extends Env<TypedVar> {
+        public VarEnv() {super();}
+        public VarEnv(VarEnv p) {super(p);}
+    }
+    public class TypeEnv extends Env<ClassDecl> {
+        public TypeEnv() {super();}
+        public TypeEnv(TypeEnv p) {super(p);}
+    }
+    public class MethEnv extends Env<MethodDecl> {
+        public MethEnv() {super();}
+        public MethEnv(MethEnv p) {super(p);}
+        @Override
+        public void enter(MethodDecl decl) {
+            String name = decl.getQualifiedIdent();
+            if (map.put(name, decl) == null) {
+                declared.add(name);
+            }
+        }
+    }
+
+    /* ------------------------------------------------------------------------
+     *    Method Environment
+     * ------------------------------------------------------------------------
+     */
+    
+    syn AbstractClassDecl AbstractClassDecl.enclosingClass() = this;
+    eq ClassDecl.getMethods().enclosingClass() = this.enclosingClass();
+    eq MainClass.getStmts().enclosingClass() = this.enclosingClass();
+    inh AbstractClassDecl MethodDecl.enclosingClass();
+    inh AbstractClassDecl Stmt.enclosingClass();
+    inh AbstractClassDecl Exp.enclosingClass();
+
+    public String MethodDecl.getQualifiedIdent() {
+        return enclosingClass().getIdent()+"."+getIdent();
+    }
+    
+    syn lazy MethEnv Program.methEnv() {
+        MethEnv env = new MethEnv();
+        for (ClassDecl c : getDeclsList()) {
+            for (MethodDecl m : c.getMethodsList()) {
+                env.enter(m);
+            }
+        }
+        return env;
+    }
+
+    eq Program.getMain().methEnv() = this.methEnv();
+    eq Program.getDecls().methEnv() = this.methEnv();
+
+    inh lazy MethEnv Decl.methEnv();
+    inh lazy MethEnv Stmt.methEnv();
+    inh lazy MethEnv Exp.methEnv();
+
+    syn lazy MethodDecl MethodCall.decl() {
+        CompileTimeType objType = getObj().ctType();
+        
+        if (objType.isClassType()) {
+            do {
+                MethodDecl method = methEnv().lookup(objType.getTypeName()+"."+getName());
+                if (method != null) {
+                    return method;
+                }
+                ClassDecl decl = typeEnv().lookup(objType.getTypeName());
+                if (decl == null) {
+                    throw new IllegalStateException("Type analysis yields undeclared class type");
+                }
+                if (decl.getBase() == null || decl.getBase().isEmpty()) {
+                    objType = null;
+                } else {
+                    objType = new CompileTimeType(decl.getBase());
+                }
+            } while (objType != null);
+            return null; // method not found
+        } else {
+            // no methods for primitive types
+            return null;
+        }
+    }
+
+    syn lazy java.util.List<String> ClassDecl.declaredMethods() {
+        java.util.List<String> ret = new java.util.ArrayList<String>();
+
+        Stack<ClassDecl> s = new Stack<ClassDecl>();
+        for (ClassDecl c = this ; c != null ; c = c.typeEnv().lookup(c.getBase())) {
+            s.push(c);
+        }
+
+        while (!s.empty()) {
+            ClassDecl c = s.pop();
+            for (MethodDecl m : c.getMethodss()) {
+                final String mname = String.format("%s.%s", c.getIdent(), m.getIdent());
+
+                // replace base class declaration, if overridden
+                boolean replaced = false;
+                for (int i = 0 ; i < ret.size() ; i++) {
+                    if (ret.get(i).endsWith("."+m.getIdent())) {
+                        ret.set(i, mname);
+                        replaced = true;
+                        break;
+                    }
+                }
+                if (!replaced) {
+                    ret.add(mname);
+                }
+            }
+        }
+
+        return ret;
+    }
+
+    /* ------------------------------------------------------------------------
+     *    Type Environment
+     * ------------------------------------------------------------------------
+     */
+
+    syn lazy TypeEnv Program.typeEnv() {
+        TypeEnv env = new TypeEnv();
+        for (ClassDecl c : getDeclsList()) {
+            env.enter(c);
+        }
+        return env;
+    }
+
+    inh lazy TypeEnv Decl.typeEnv();
+    inh lazy TypeEnv Stmt.typeEnv();
+    inh lazy TypeEnv Exp.typeEnv();
+    inh lazy TypeEnv TypeUse.typeEnv();
+
+    syn lazy ClassDecl ObjAlloc.decl() = typeEnv().lookup(getName());
+    syn lazy ClassDecl ClassT.decl() = typeEnv().lookup(getName());
+
+    eq Program.getMain().typeEnv() = this.typeEnv();
+    eq Program.getDecls().typeEnv() = this.typeEnv();
+    
+
+    /* ------------------------------------------------------------------------
+     *    Variable Environment
+     * ------------------------------------------------------------------------
+     */
+
+    syn MethodDecl MethodDecl.enclosingMethod() = this;
+    syn MethodDecl MainClass.enclosingMethod() = null; // we can handle this
+    eq MethodDecl.getStmts().enclosingMethod() = enclosingMethod();
+    eq MethodDecl.getRetExp().enclosingMethod() = enclosingMethod();
+    eq MainClass.getStmts().enclosingMethod() = enclosingMethod();
+    inh lazy MethodDecl Stmt.enclosingMethod();
+    inh lazy MethodDecl Exp.enclosingMethod();
+
+    inh lazy VarEnv Decl.varEnv();
+    inh lazy VarEnv Stmt.varEnv();
+    inh lazy VarEnv Exp.varEnv();
+
+    syn lazy VarEnv ClassDecl.varEnv() {
+        VarEnv varEnv = new VarEnv();
+
+        Stack<ClassDecl> s = new Stack<ClassDecl>();
+        for (ClassDecl clazz = this; clazz != null ; clazz = typeEnv().lookup(clazz.getBase())) {
+            s.push(clazz);
+        }
+
+        while (!s.empty()) {
+            ClassDecl clazz = s.pop();
+            for (TypedVar v : clazz.getFieldsList()) {
+                varEnv.enter(v);
+            }
+        }
+
+        return varEnv;
+    }
+
+    public VarEnv MainClass.varEnv() {
+        VarEnv varEnv = new VarEnv();
+        for (TypedVar v : getLocalVarsList()) {
+            varEnv.enter(v);
+        }
+        return varEnv;
+    }
+
+    public VarEnv MethodDecl.varEnv() {
+        VarEnv varEnv = new VarEnv(enclosingClass().varEnv());
+        for (TypedVar v : getFormalParamsList()) {
+            varEnv.enter(v);
+        }
+        for (TypedVar v : getLocalVarsList()) {
+            varEnv.enter(v);
+        }
+        return varEnv;
+    }
+
+    eq MainClass.getStmts().varEnv() = varEnv();
+    eq MethodDecl.getStmts().varEnv() = varEnv();
+    eq MethodDecl.getRetExp().varEnv() = varEnv();
+
+    syn lazy TypedVar IdentUse.decl() = varEnv().lookup(getName());
+    syn lazy TypedVar Assign.decl() = varEnv().lookup(getName());
+}

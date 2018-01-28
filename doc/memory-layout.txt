@@ -1,0 +1,65 @@
+This file describes the memory layout for objects.
+
+------------------------ Memory usage -----------------------------------------
+
+Let C be a class, m_1,...,m_k its methods and f_1,...,f_n its fields.
+Then the memory that must be allocated for an object of type C is exactly
+(in words):
+
+sizeof(C) = 1 + n
+
+The memory that must be allocated by the runtime for each class is exactly k.
+
+----------------------------- Layout ------------------------------------------
+
+The layout is as follows:
+
+reference to class object | base class fields | this class fields
+
+The symbols are stored in declaration order, overriding symbols are not
+separately stored.
+
+Example:
+
+class A {
+    int a; int b;
+    public int func() {return 0;}
+}
+class B extends A {
+    public int foo() {return 0;}
+    int c; int d;
+}
+class C extends B {
+    int e;
+    public int func() {return 0;}
+}
+
+An object of type C has the layout:
+
+ref to C | a | b | c | d | e
+
+--------------------------- Symbol Tables -------------------------------------
+
+Each class will have a representation in memory, that is initialized on program
+startup. The method labels are stored in declaration order. Methods declared
+in base classes come first and are replaced by overriding methods as needed.
+
+We don't use a symbol table for fields as they are indexed in declaration
+order.
+
+Inherited fields must also be indexed according to the layout.
+
+----------------------- Method local memory------------------------------------
+
+Method local memory needs to store three things:
+  1. formal parameters
+  2. local variables
+  3. field variables
+
+According to the piglet spec, we shall use temporaries 0,...,k-1 for storing the
+k formal parameters and temporaries k,...,n for storing the n-k local variables.
+We will also use temporaries n+1,...n+j for the j field variables.
+
+Since there is no concurrency support, we can simply load all field variables
+at procedure start and store them back and procedure end. A usage analysis may
+optimize this later on.
